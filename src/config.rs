@@ -1,32 +1,69 @@
 use serde::Deserialize;
 use std::fs;
-use toml;
 
 #[derive(Deserialize)]
 pub struct ServerConfig {
     pub bootnodes: Vec<String>,
+    pub chain_spec: String,
+}
+
+pub mod genesis {
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Deserialize)]
+    pub struct GenesisRaw {
+        pub top: HashMap<String, String>,
+    }
+
+    #[derive(Deserialize)]
+    pub struct Genesis {
+        pub raw: GenesisRaw,
+    }
+
+    #[derive(Deserialize)]
+    pub struct RawChainSpec {
+        pub name: String,
+        pub id: String,
+        #[serde(alias = "bootNodes")]
+        pub bootnodes: Vec<String>,
+        #[serde(alias = "protocolId")]
+        pub protocol_id: String,
+        #[serde(alias = "forkBlocks")]
+        pub fork_blocks: Option<Vec<String>>,
+        #[serde(alias = "badBlocks")]
+        pub bad_blocks: Option<Vec<String>>,
+        pub genesis: Genesis,
+    }
 }
 
 pub mod parser {
-    use super::ServerConfig;
+    use super::{genesis, ServerConfig};
     use serde::de::DeserializeOwned;
 
-    pub trait ParserFromSlice {
+    pub trait ParserFromStr {
         type Output: DeserializeOwned;
         fn from_str(input: &'_ str) -> Self::Output;
     }
 
-    pub struct TomlParser;
-    impl ParserFromSlice for TomlParser {
+    pub struct ConfigTOMLParser;
+    impl ParserFromStr for ConfigTOMLParser {
         type Output = ServerConfig;
         fn from_str(input: &str) -> Self::Output {
             toml::from_str::<Self::Output>(input).expect("failed to parse toml file")
         }
     }
+
+    pub struct RawChainSpecJSONParser;
+    impl ParserFromStr for RawChainSpecJSONParser {
+        type Output = genesis::RawChainSpec;
+        fn from_str(input: &'_ str) -> Self::Output {
+            serde_json::from_str(input).expect("failed to parse raw chain spec file")
+        }
+    }
 }
 
-// config_from_file::<TomlParser>("path_to.toml")
-pub fn config_from_file<P: parser::ParserFromSlice>(path: String) -> P::Output {
+pub fn from_file<P: parser::ParserFromStr>(path: String) -> P::Output {
     let contents = fs::read(path).expect("failed to read file");
     let str_contents = String::from_utf8_lossy(&contents);
 
