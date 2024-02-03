@@ -86,9 +86,30 @@ impl<H: Hasher> Trie<H> {
         }
 
         match element {
-            Element::Leaf(leaf) => unimplemented!(), // self.insert_on_leaf(),
+            Element::Leaf(leaf) => self.insert_on_leaf(leaf, key, value), // self.insert_on_leaf(),
             Element::Branch(branch) => unimplemented!(),
         }
+    }
+
+    fn insert_on_leaf(
+        &mut self,
+        leaf_element: &mut Leaf<H>,
+        key: Key,
+        value: StorageValue,
+    ) -> Result<Node<H>, TrieError> {
+        // 1. none of the keys shares a prefix key, then a new root
+        // will be created with an empty partial key, then the current leaf
+        // element will be a children and the inserted key and value another children
+        // 2. keys shares some prefix key
+        //   2.a the shared prefix is equal to the current leaf node, then we should transform
+        //       the leaf node into a branch, conserving its storage value and the key and value
+        //       be a children of the new branch node
+        //   2.b the shared prefix is equal to the key beign inserted, then a new branch will be
+        //       created and it will have the key and value and the current leaf node will be a children
+        //       of the new branch node
+        //   2.c in this case the shared prefix is not equal the complete key nor the complete leaf partial_key
+        //       which means that a branch node will be created but it will not hold any value, and the current
+        //       leaf node will become a child also the remaining key and the value will become another child
     }
 }
 
