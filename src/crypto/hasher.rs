@@ -5,8 +5,8 @@ use blake2::{
     Blake2bVar,
 };
 
-pub trait Hasher: Clone {
-    type Out: Debug + PartialEq + Clone + Copy;
+pub trait Hasher: Clone + Debug {
+    type Out: Debug + PartialEq + Clone;
 
     fn hash(input: &[u8]) -> Self::Out;
 }

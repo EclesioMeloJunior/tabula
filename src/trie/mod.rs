@@ -1,7 +1,11 @@
 mod key;
 
+use std::ops::Index;
+
 use crate::crypto::hasher::{Blake256Hasher, Hasher};
 use key::Key;
+
+use self::key::Nibble;
 
 type StorageValue = Option<Vec<u8>>;
 
@@ -17,11 +21,33 @@ pub struct Leaf<H: Hasher> {
     storage_value: VersionedStorageValue<H>,
 }
 
+impl<H: Hasher> Leaf<H> {
+    fn to_element(&self) -> Element<H> {
+        Element::Leaf(self.to_owned())
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Branch<H: Hasher> {
     partial_key: Key,
     storage_value: VersionedStorageValue<H>,
-    children: [Element<H>; 16],
+    children: [Option<Element<H>>; 16],
+}
+
+impl<H: Hasher> Branch<H> {
+    fn to_element(&self) -> Element<H> {
+        Element::Branch(Box::new(self.to_owned()))
+    }
+}
+
+impl<H: Hasher> Branch<H> {
+    fn new_empty_branch() -> Self {
+        Branch {
+            partial_key: Key::from(vec![]),
+            storage_value: VersionedStorageValue::RawStorageValue(None),
+            children: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -59,12 +85,13 @@ pub struct Trie<H: Hasher> {
 #[derive(Debug, PartialEq)]
 pub enum TrieError {
     InsertionFailed,
+    CannotGetChildIndex,
 }
 
 impl<H: Hasher> Trie<H> {
     fn insert(&mut self, key: Key, value: StorageValue) -> Result<(), TrieError> {
         let root: Node<H> = match self.root.take() {
-            Some(ref mut node) => self.insert_recursively(node, key, value)?, //self.insert_on_element(element, key, value),
+            Some(ref mut node) => self.insert_recursively(node, key, value)?,
             None => Some(Element::Leaf(Leaf {
                 partial_key: key,
                 storage_value: VersionedStorageValue::RawStorageValue(value),
@@ -110,6 +137,34 @@ impl<H: Hasher> Trie<H> {
         //   2.c in this case the shared prefix is not equal the complete key nor the complete leaf partial_key
         //       which means that a branch node will be created but it will not hold any value, and the current
         //       leaf node will become a child also the remaining key and the value will become another child
+        let common_untill = leaf_element.partial_key.common_length(&key);
+        if common_untill == 0 {
+            let mut branch_element = Branch::<H>::new_empty_branch();
+            let (leaf_child_index, leaf_rest_partial_key) =
+                match leaf_element.partial_key.child_index(common_untill) {
+                    (Some(child_index), Some(rest_partial_key)) => {
+                        (child_index.to_owned(), rest_partial_key)
+                    }
+                    _ => return Err(TrieError::CannotGetChildIndex),
+                };
+
+            leaf_element.partial_key = leaf_rest_partial_key;
+            branch_element.children[leaf_child_index as usize] = Some(leaf_element.to_element());
+
+            let (key_child_index, key_rest) = match key.child_index(common_untill) {
+                (Some(child_index), Some(key_rest)) => (child_index.to_owned(), key_rest),
+                _ => return Err(TrieError::CannotGetChildIndex),
+            };
+
+            branch_element.children[key_child_index as usize] = Some(Element::<H>::Leaf(Leaf {
+                partial_key: key_rest,
+                storage_value: VersionedStorageValue::RawStorageValue(value),
+            }));
+
+            return Ok(Some(branch_element.to_element()));
+        }
+
+        Err(TrieError::InsertionFailed)
     }
 }
 
@@ -117,7 +172,7 @@ impl<H: Hasher> Trie<H> {
 mod tests {
     use crate::crypto::hasher::Blake256Hasher;
 
-    use super::{key::Key, Element, Leaf, Trie, VersionedStorageValue};
+    use super::*;
     use hex_literal::hex;
 
     #[test]
@@ -159,14 +214,42 @@ mod tests {
         let mut t: Trie<Blake256Hasher> = Trie::default();
         t.insert(Key::new(&hex!("aabbcc")), Some(vec![0, 1, 2, 3, 4]))
             .unwrap();
-        t.insert(Key::new(&hex!("aabbcc0d")), Some(vec![0, 0, 0, 0, 1]))
+        t.insert(Key::new(&hex!("11bbcc0d")), Some(vec![5, 0, 0, 0, 1]))
             .unwrap();
 
         let expected = Trie {
-            root: Some(Element::Leaf(Leaf {
-                partial_key: Key::new(&hex!("aabbcc")),
-                storage_value: VersionedStorageValue::RawStorageValue(Some(vec![0, 1, 2, 3, 4])),
-            })),
+            root: Some(Element::Branch(Box::new(Branch {
+                partial_key: Key::from(vec![]),
+                children: [
+                    None,
+                    Some(Element::Leaf(Leaf {
+                        partial_key: Key(vec![1, 11, 11, 12, 12, 0, 13]),
+                        storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
+                            5, 0, 0, 0, 1,
+                        ])),
+                    })),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(Element::Leaf(Leaf {
+                        partial_key: Key(vec![10, 11, 11, 12, 12]),
+                        storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
+                            0, 1, 2, 3, 4,
+                        ])),
+                    })),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ],
+                storage_value: VersionedStorageValue::RawStorageValue(None),
+            }))),
         };
 
         assert_eq!(expected, t);

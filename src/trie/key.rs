@@ -3,7 +3,7 @@ use std::convert::{From, Into};
 pub type Nibble = u8;
 
 #[derive(Default, Debug, PartialEq, Clone)]
-pub struct Key(Vec<Nibble>);
+pub struct Key(pub Vec<Nibble>);
 
 impl From<Vec<(Nibble, Nibble)>> for Key {
     fn from(encoded_nibbles: Vec<(Nibble, Nibble)>) -> Self {
@@ -49,30 +49,21 @@ impl Key {
         self.0
             .iter()
             .zip(other.0.iter())
-            .filter(|(fst, snd)| fst == snd)
+            .take_while(|(fst, snd)| (fst == snd))
             .count()
     }
 
-    pub fn common_prefix_and_remaining(&self, other: &Key) -> Option<(Key, Key, Option<Key>)> {
-        let max_prefix_len = self.common_length(other);
-        if max_prefix_len == 0 {
-            // TODO: should this panic?
-            return None;
+    // given an index it will return
+    pub fn child_index(&self, index: usize) -> (Option<&Nibble>, Option<Key>) {
+        if index > self.0.len() {
+            return (None, None);
         }
 
-        // |-----
-        // |--------
-        //
-        // -|----
-        // -|-------
-        //
-        // -----|
-        // -----|---
-        //
-        // -----|
-        // -----|---
-        //if max_prefix_len < self.0.len() && max_prefix_len < other.0.len() {}
-        None
+        let at = self.0.get(index);
+        if index + 1 > self.0.len() {
+            return (at, None);
+        }
+        (at, Some(Key(self.0.as_slice()[index + 1..].to_vec())))
     }
 }
 
@@ -111,10 +102,9 @@ mod tests {
                 Key(vec![0x0a, 0x0a, 0x0b, 0x0b, 0x0c, 0x0c]),
             ),
             (Key(vec![]), Key(vec![0x0a, 0x0a])),
-            (Key(vec![]), Key(vec![])),
         ];
 
-        let expected_len: Vec<usize> = vec![2, 6, 0, 0];
+        let expected_len: Vec<usize> = vec![0, 2, 6, 0];
 
         let cases = tests.iter().zip(expected_len);
         for (test, expected) in cases {
