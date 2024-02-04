@@ -22,8 +22,38 @@ pub struct Leaf<H: Hasher> {
 }
 
 impl<H: Hasher> Leaf<H> {
+    fn new(key: Key, storage_value: VersionedStorageValue<H>) -> Self {
+        Leaf {
+            partial_key: key,
+            storage_value,
+        }
+    }
+
     fn to_element(&self) -> Element<H> {
         Element::Leaf(self.to_owned())
+    }
+
+    // changes the current leaf to be a child of some other branch
+    // it updates its own partial_key to be the rest after the child
+    // index and return the child index
+    fn as_child(&mut self, common_prefix_len: usize) -> Result<usize, TrieError> {
+        let (child_index, rest) = match self.partial_key.child_index(common_prefix_len) {
+            (Some(child_index), Some(rest_partial_key)) => {
+                (child_index.to_owned(), rest_partial_key)
+            }
+            _ => return Err(TrieError::CannotGetChildIndex),
+        };
+
+        self.partial_key = rest;
+        Ok(child_index as usize)
+    }
+
+    fn as_branch(&self) -> Branch<H> {
+        Branch {
+            partial_key: self.partial_key.clone(),
+            storage_value: self.storage_value.clone(),
+            children: Default::default(),
+        }
     }
 }
 
@@ -41,10 +71,18 @@ impl<H: Hasher> Branch<H> {
 }
 
 impl<H: Hasher> Branch<H> {
-    fn new_empty_branch() -> Self {
+    fn new_empty() -> Self {
         Branch {
             partial_key: Key::from(vec![]),
             storage_value: VersionedStorageValue::RawStorageValue(None),
+            children: Default::default(),
+        }
+    }
+
+    fn new(key: Key, value: VersionedStorageValue<H>) -> Self {
+        Branch {
+            partial_key: key,
+            storage_value: value,
             children: Default::default(),
         }
     }
@@ -124,6 +162,11 @@ impl<H: Hasher> Trie<H> {
         key: Key,
         value: StorageValue,
     ) -> Result<Node<H>, TrieError> {
+        if leaf_element.partial_key.eq(&key) || key.0.len() == 0 {
+            leaf_element.storage_value = VersionedStorageValue::RawStorageValue(value);
+            return Ok(Some(leaf_element.to_element()));
+        }
+
         // 1. none of the keys shares a prefix key, then a new root
         // will be created with an empty partial key, then the current leaf
         // element will be a children and the inserted key and value another children
@@ -137,34 +180,48 @@ impl<H: Hasher> Trie<H> {
         //   2.c in this case the shared prefix is not equal the complete key nor the complete leaf partial_key
         //       which means that a branch node will be created but it will not hold any value, and the current
         //       leaf node will become a child also the remaining key and the value will become another child
-        let common_untill = leaf_element.partial_key.common_length(&key);
-        if common_untill == 0 {
-            let mut branch_element = Branch::<H>::new_empty_branch();
-            let (leaf_child_index, leaf_rest_partial_key) =
-                match leaf_element.partial_key.child_index(common_untill) {
-                    (Some(child_index), Some(rest_partial_key)) => {
-                        (child_index.to_owned(), rest_partial_key)
-                    }
-                    _ => return Err(TrieError::CannotGetChildIndex),
-                };
+        let common_prefix_len = leaf_element.partial_key.common_length(&key);
 
-            leaf_element.partial_key = leaf_rest_partial_key;
-            branch_element.children[leaf_child_index as usize] = Some(leaf_element.to_element());
+        if common_prefix_len == 0 {
+            let mut branch_element = Branch::<H>::new_empty();
+            let child_index = leaf_element.as_child(common_prefix_len)?;
+            branch_element.children[child_index] = Some(leaf_element.to_element());
 
-            let (key_child_index, key_rest) = match key.child_index(common_untill) {
-                (Some(child_index), Some(key_rest)) => (child_index.to_owned(), key_rest),
-                _ => return Err(TrieError::CannotGetChildIndex),
-            };
+            let mut new_leaf = Leaf::new(key, VersionedStorageValue::RawStorageValue(value));
+            let child_index = new_leaf.as_child(common_prefix_len)?;
 
-            branch_element.children[key_child_index as usize] = Some(Element::<H>::Leaf(Leaf {
-                partial_key: key_rest,
-                storage_value: VersionedStorageValue::RawStorageValue(value),
-            }));
-
+            branch_element.children[child_index] = Some(new_leaf.to_element());
             return Ok(Some(branch_element.to_element()));
         }
 
-        Err(TrieError::InsertionFailed)
+        if common_prefix_len == leaf_element.partial_key.0.len() {
+            let mut new_leaf = Leaf::new(key, VersionedStorageValue::RawStorageValue(value));
+            let child_index = new_leaf.as_child(common_prefix_len)?;
+
+            let mut branch = leaf_element.as_branch();
+            branch.children[child_index] = Some(new_leaf.to_element());
+            return Ok(Some(branch.to_element()));
+        }
+
+        if common_prefix_len == key.0.len() {
+            let child_index = leaf_element.as_child(common_prefix_len)?;
+            let mut branch = Branch::<H>::new(key, VersionedStorageValue::RawStorageValue(value));
+            branch.children[child_index] = Some(leaf_element.to_element());
+            return Ok(Some(branch.to_element()));
+        }
+
+        let common_branch_partial_key = Key(key.0.as_slice()[0..common_prefix_len].to_vec());
+        let mut branch = Branch::<H>::new_empty();
+        branch.partial_key = common_branch_partial_key;
+
+        let mut new_leaf = Leaf::<H>::new(key, VersionedStorageValue::RawStorageValue(value));
+        let child_index = new_leaf.as_child(common_prefix_len)?;
+
+        branch.children[child_index] = Some(new_leaf.to_element());
+
+        let child_index = leaf_element.as_child(common_prefix_len)?;
+        branch.children[child_index] = Some(leaf_element.to_element());
+        Ok(Some(branch.to_element()))
     }
 }
 
@@ -207,10 +264,57 @@ mod tests {
         };
 
         assert_eq!(expected, t);
+
+        // using empty vec is the same as updating the same key
+        let mut t: Trie<Blake256Hasher> = Trie::default();
+        t.insert(Key::new(&hex!("aabbcc")), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+        t.insert(Key::from(vec![]), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+
+        let expected = Trie {
+            root: Some(Element::Leaf(Leaf {
+                partial_key: Key::new(&hex!("aabbcc")),
+                storage_value: VersionedStorageValue::RawStorageValue(Some(vec![0, 1, 2, 3, 4])),
+            })),
+        };
+
+        assert_eq!(expected, t);
+
+        // updating, now passing the same key
+        let mut t: Trie<Blake256Hasher> = Trie::default();
+        t.insert(Key::new(&hex!("aabbcc")), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+        t.insert(Key::new(&hex!("aabbcc")), Some(vec![1, 1]))
+            .unwrap();
+
+        let expected = Trie {
+            root: Some(Element::Leaf(Leaf {
+                partial_key: Key::new(&hex!("aabbcc")),
+                storage_value: VersionedStorageValue::RawStorageValue(Some(vec![1, 1])),
+            })),
+        };
+
+        assert_eq!(expected, t);
+
+        // updating, now using empty vec and another value
+        let mut t: Trie<Blake256Hasher> = Trie::default();
+        t.insert(Key::new(&hex!("aabbcc")), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+        t.insert(Key::from(vec![]), Some(vec![1, 1])).unwrap();
+
+        let expected = Trie {
+            root: Some(Element::Leaf(Leaf {
+                partial_key: Key::new(&hex!("aabbcc")),
+                storage_value: VersionedStorageValue::RawStorageValue(Some(vec![1, 1])),
+            })),
+        };
+
+        assert_eq!(expected, t);
     }
 
     #[test]
-    fn inserting_more_keys() {
+    fn inserting_another_key_without_common_prefix_on_existing_leaf() {
         let mut t: Trie<Blake256Hasher> = Trie::default();
         t.insert(Key::new(&hex!("aabbcc")), Some(vec![0, 1, 2, 3, 4]))
             .unwrap();
@@ -249,6 +353,134 @@ mod tests {
                     None,
                 ],
                 storage_value: VersionedStorageValue::RawStorageValue(None),
+            }))),
+        };
+
+        assert_eq!(expected, t);
+    }
+
+    #[test]
+    fn leaf_should_become_branch() {
+        let mut t: Trie<Blake256Hasher> = Trie::default();
+        t.insert(Key::new(&hex!("aabb")), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+        t.insert(Key::new(&hex!("aabbcc")), Some(vec![5, 0, 0, 0, 1]))
+            .unwrap();
+
+        let expected = Trie {
+            root: Some(Element::Branch(Box::new(Branch {
+                partial_key: Key(vec![10, 10, 11, 11]),
+                storage_value: VersionedStorageValue::RawStorageValue(Some(vec![0, 1, 2, 3, 4])),
+                children: [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(Element::Leaf(Leaf {
+                        partial_key: Key(vec![12]),
+                        storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
+                            5, 0, 0, 0, 1,
+                        ])),
+                    })),
+                    None,
+                    None,
+                    None,
+                ],
+            }))),
+        };
+
+        assert_eq!(expected, t);
+    }
+
+    #[test]
+    fn inserted_key_value_should_be_branch_and_leaf_should_child() {
+        let mut t: Trie<Blake256Hasher> = Trie::default();
+        t.insert(Key::new(&hex!("aabb")), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+        t.insert(Key::new(&hex!("aa")), Some(vec![5, 0, 0, 0, 1]))
+            .unwrap();
+
+        let expected = Trie {
+            root: Some(Element::Branch(Box::new(Branch {
+                partial_key: Key(vec![10, 10]),
+                storage_value: VersionedStorageValue::RawStorageValue(Some(vec![5, 0, 0, 0, 1])),
+                children: [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(Element::Leaf(Leaf {
+                        partial_key: Key(vec![11]),
+                        storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
+                            0, 1, 2, 3, 4,
+                        ])),
+                    })),
+                    None,
+                    None,
+                    None,
+                    None,
+                ],
+            }))),
+        };
+
+        assert_eq!(expected, t);
+    }
+
+    #[test]
+    fn inserted_and_leaf_should_be_child_of_common_branch() {
+        let mut t: Trie<Blake256Hasher> = Trie::default();
+        t.insert(Key::new(&hex!("aa11")), Some(vec![0, 1, 2, 3, 4]))
+            .unwrap();
+        t.insert(Key::new(&hex!("aa22")), Some(vec![5, 0, 0, 0, 1]))
+            .unwrap();
+
+        let expected = Trie {
+            root: Some(Element::Branch(Box::new(Branch {
+                partial_key: Key(vec![10, 10]),
+                storage_value: VersionedStorageValue::RawStorageValue(None),
+                children: [
+                    None,
+                    Some(Element::Leaf(Leaf {
+                        partial_key: Key(vec![1]),
+                        storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
+                            0, 1, 2, 3, 4,
+                        ])),
+                    })),
+                    Some(Element::Leaf(Leaf {
+                        partial_key: Key(vec![2]),
+                        storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
+                            5, 0, 0, 0, 1,
+                        ])),
+                    })),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ],
             }))),
         };
 
