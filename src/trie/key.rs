@@ -65,6 +65,11 @@ impl Key {
         }
         (at, Some(Key(self.0.as_slice()[index + 1..].to_vec())))
     }
+
+    // new_partial_key returns a new instance of Key starting from index 0..lim
+    pub fn new_partial_key(&self, lim: usize) -> Key {
+        Key(self.0.as_slice()[0..lim].to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +92,11 @@ mod tests {
 
         let back_to_bytes: Vec<u8> = encoded.into();
         assert_eq!(input.to_vec(), back_to_bytes);
+
+        let encoded = Key::new(&[2, 15, 15]);
+        let bytes: Vec<u8> = encoded.into();
+
+        println!("{:?}", bytes);
     }
 
     #[test]
