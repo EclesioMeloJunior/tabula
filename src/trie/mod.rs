@@ -1,5 +1,7 @@
 mod key;
 
+use std::default;
+
 use crate::crypto::hasher::Hasher;
 use key::Key;
 
@@ -24,7 +26,13 @@ enum VersionedStorageValue<H: Hasher> {
     HashedStorageValue(H::Out),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+impl<H: Hasher> Default for VersionedStorageValue<H> {
+    fn default() -> Self {
+        Self::RawStorageValue(None)
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct Leaf<H: Hasher> {
     partial_key: Key,
     storage_value: VersionedStorageValue<H>,
@@ -92,6 +100,18 @@ impl<H: Hasher> Branch<H> {
 
     fn to_element(&self) -> Element<H> {
         Element::Branch(Box::new(self.to_owned()))
+    }
+
+    fn children_bitmap(&self) -> [u8; 2] {
+        let mut bitmap: u16 = 0;
+        let one: u16 = 1;
+
+        for (idx, child) in (&self.children).into_iter().enumerate() {
+            if child.is_some() {
+                bitmap |= one << idx;
+            }
+        }
+        bitmap.to_le_bytes()
     }
 }
 
@@ -878,5 +898,112 @@ mod tests {
 
         let not_found = t.get(&Key(vec![0, 0, 0, 0, 1]));
         assert_eq!(not_found, Err(TrieError::StorageValueNotFound));
+    }
+
+    #[test]
+    fn branch_children_bitmap() {
+        let branch = Branch::<Blake256Hasher> {
+            partial_key: Key(vec![0, 1, 0]),
+            storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
+            children: [
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+            ],
+        };
+
+        let expected_bitmap: [u8; 2] = [0xff, 0xff];
+        assert_eq!(branch.children_bitmap(), expected_bitmap);
+
+        let branch = Branch::<Blake256Hasher> {
+            partial_key: Key(vec![0, 1, 0]),
+            storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
+            children: [
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+            ],
+        };
+
+        let expected_bitmap: [u8; 2] = [0x00, 0xff];
+        assert_eq!(branch.children_bitmap(), expected_bitmap);
+
+        let branch = Branch::<Blake256Hasher> {
+            partial_key: Key(vec![0, 1, 0]),
+            storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
+            children: [
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                Some(Element::Leaf(Default::default())),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+        };
+
+        let expected_bitmap: [u8; 2] = [0xff, 0x00];
+        assert_eq!(branch.children_bitmap(), expected_bitmap);
+
+        let branch = Branch::<Blake256Hasher> {
+            partial_key: Key(vec![0, 1, 0]),
+            storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
+            children: [
+                Some(Element::Leaf(Default::default())),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Element::Leaf(Default::default())),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Element::Leaf(Default::default())),
+            ],
+        };
+
+        let expected_bitmap: [u8; 2] = [0b01000001, 0b10000000];
+        assert_eq!(branch.children_bitmap(), expected_bitmap);
     }
 }
