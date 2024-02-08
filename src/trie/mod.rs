@@ -138,6 +138,28 @@ impl<H: Hasher> Element<H> {
 
         element_key.eq(key) && storage_value_eq
     }
+
+    fn encoded_header(&self) -> Vec<u8> {
+        let mut encoded: Vec<u8> = Vec::with_capacity(1);
+        let (node_variant, partial_key_length): (u8, usize) = match self {
+            Element::Leaf(leaf) => match leaf.storage_value {
+                VersionedStorageValue::RawStorageValue(_) => (0b01000000, leaf.partial_key.0.len()),
+                VersionedStorageValue::HashedStorageValue(_) => {
+                    (0b00100000, leaf.partial_key.0.len())
+                }
+            },
+            Element::Branch(branch) => match branch.storage_value {
+                VersionedStorageValue::RawStorageValue(_) => {
+                    (0b10000000, branch.partial_key.0.len())
+                }
+                VersionedStorageValue::HashedStorageValue(_) => {
+                    (0b00010000, branch.partial_key.0.len())
+                }
+            },
+        };
+
+        encoded
+    }
 }
 
 type Node<H> = Option<Element<H>>;
