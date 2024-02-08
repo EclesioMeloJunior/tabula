@@ -1,6 +1,6 @@
 mod key;
 
-use std::default;
+use std::{ascii::AsciiExt, default};
 
 use crate::crypto::hasher::Hasher;
 use key::Key;
@@ -181,6 +181,10 @@ impl<H: Hasher> Element<H> {
     }
 }
 
+trait Encodable {
+    fn encode_header(&self) -> Vec<u8>;
+}
+
 type Node<H> = Option<Element<H>>;
 
 #[derive(Default, Debug, PartialEq)]
@@ -196,6 +200,30 @@ pub enum TrieError {
 }
 
 impl<H: Hasher> Trie<H> {
+    fn encode(&self, version: u8) -> Vec<u8> {
+        match &self.root {
+            Some(element) => self.encode_trie_root(&element, version),
+            None => vec![0b00000000],
+        }
+    }
+
+    fn encode_trie_root(&self, element: &Element<H>, version: u8) -> Vec<u8> {
+        match element {
+            Element::Leaf(leaf) => {
+                let header = leaf.encoded_header();
+                let partial_key: Vec<u8> = leaf.partial_key.into();
+                let storage_value = match leaf.storage_value {
+                    VersionedStorageValue::RawStorageValue(Some(v)) => {
+                        unimplemented!("need to scale encode the object")
+                    },
+                    VersionedStorageValue::RawStorageValue(None) => vec![],
+                    VersionedStorageValue::HashedStorageValue(hash) => hash.to_vec(),
+                }
+            }
+        }
+        vec![]
+    }
+
     fn get(&self, key: &Key) -> Result<StorageValue, TrieError> {
         match self.root.clone() {
             Some(element) => self.get_recursively(element, key),
