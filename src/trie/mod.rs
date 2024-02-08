@@ -66,6 +66,15 @@ impl<H: Hasher> Leaf<H> {
             children: Default::default(),
         }
     }
+
+    fn encoded_header(&self) -> Vec<u8> {
+        let (variant, remaining): (u8, u8) = match self.storage_value {
+            VersionedStorageValue::RawStorageValue(_) => (0b01000000, 0b00111111),
+            VersionedStorageValue::HashedStorageValue(_) => (0b00100000, 0b00011111),
+        };
+
+        self.partial_key.encode_len(variant, remaining)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -112,6 +121,16 @@ impl<H: Hasher> Branch<H> {
             }
         }
         bitmap.to_le_bytes()
+    }
+
+    fn encoded_header(&self) -> Vec<u8> {
+        let (variant, remaining): (u8, u8) = match self.storage_value {
+            VersionedStorageValue::RawStorageValue(None) => (0b10000000, 0b00111111),
+            VersionedStorageValue::RawStorageValue(_) => (0b11000000, 0b00111111),
+            VersionedStorageValue::HashedStorageValue(_) => (0b00010000, 0b00001111),
+        };
+
+        self.partial_key.encode_len(variant, remaining)
     }
 }
 
@@ -1027,5 +1046,97 @@ mod tests {
 
         let expected_bitmap: [u8; 2] = [0b01000001, 0b10000000];
         assert_eq!(branch.children_bitmap(), expected_bitmap);
+    }
+
+    #[test]
+    fn test_element_header_encoding() {
+        let leafs = vec![
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key(vec![1, 2, 3]),
+                    storage_value: Default::default(),
+                },
+                vec![0b01000011],
+            ),
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key([0; 63].to_vec()),
+                    storage_value: Default::default(),
+                },
+                vec![0b01111111],
+            ),
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key([0; 64].to_vec()),
+                    storage_value: Default::default(),
+                },
+                vec![0b01111111, 0b00000001],
+            ),
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key([0; 319].to_vec()),
+                    storage_value: Default::default(),
+                },
+                vec![0b01111111, 0b11111111, 0b0000001],
+            ),
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key(vec![1, 2, 3]),
+                    storage_value: VersionedStorageValue::HashedStorageValue([0; 32]),
+                },
+                vec![0b00100011],
+            ),
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key([0; 31].to_vec()),
+                    storage_value: VersionedStorageValue::HashedStorageValue([0; 32]),
+                },
+                vec![0b00111111],
+            ),
+            (
+                Leaf::<Blake256Hasher> {
+                    partial_key: Key([0; 32].to_vec()),
+                    storage_value: VersionedStorageValue::HashedStorageValue([0; 32]),
+                },
+                vec![0b00111111, 0b00000001],
+            ),
+        ];
+
+        for (leaf, expected_enc_header) in leafs {
+            let out = leaf.encoded_header();
+            assert_eq!(out, expected_enc_header);
+        }
+
+        let branches = vec![
+            (
+                Branch::<Blake256Hasher> {
+                    partial_key: Key(vec![0, 1, 2]),
+                    children: Default::default(),
+                    storage_value: VersionedStorageValue::RawStorageValue(None),
+                },
+                vec![0b10000011],
+            ),
+            (
+                Branch::<Blake256Hasher> {
+                    partial_key: Key([0; 63].to_vec()),
+                    children: Default::default(),
+                    storage_value: VersionedStorageValue::RawStorageValue(Some(vec![1, 2, 3])),
+                },
+                vec![0b11111111],
+            ),
+            (
+                Branch::<Blake256Hasher> {
+                    partial_key: Key([0; 319].to_vec()),
+                    children: Default::default(),
+                    storage_value: VersionedStorageValue::HashedStorageValue([0; 32]),
+                },
+                vec![0b00011111, 0b11111111, 0b00110001],
+            ),
+        ];
+
+        for (branch, expected_enc_header) in branches {
+            let out = branch.encoded_header();
+            assert_eq!(out, expected_enc_header)
+        }
     }
 }

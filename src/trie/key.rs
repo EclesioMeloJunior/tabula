@@ -70,6 +70,31 @@ impl Key {
     pub fn new_partial_key(&self, lim: usize) -> Key {
         Key(self.0.as_slice()[0..lim].to_vec())
     }
+
+    pub fn encode_len(&self, variant: u8, remaining: u8) -> Vec<u8> {
+        let mut length = self.0.len();
+
+        if length <= (remaining as usize) {
+            let encoded = variant | (length as u8);
+            return encoded.to_le_bytes().to_vec();
+        }
+
+        let mut encoded = vec![variant | remaining];
+        length -= remaining as usize;
+
+        loop {
+            if length > (u8::MAX as usize) {
+                encoded.push(255);
+                length -= 255;
+                continue;
+            }
+
+            encoded.push(length as u8);
+            break;
+        }
+
+        encoded
+    }
 }
 
 #[cfg(test)]
