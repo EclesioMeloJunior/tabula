@@ -23,11 +23,21 @@ impl Into<Vec<u8>> for Key {
             return vec![];
         }
 
-        self.0
-            .chunks(2)
-            .into_iter()
-            .map(|chks| (chks[0] << 4 & 0xf0) | (chks[1] & 0x0f))
-            .collect::<Vec<u8>>()
+        let padded_nibbles = if self.0.len() % 2 != 0 {
+            let mut padded = vec![0];
+            padded.extend(self.0);
+            padded
+        } else {
+            self.0
+        };
+
+        let mut key = Vec::new();
+        for i in (0..padded_nibbles.len()).step_by(2) {
+            let byte = (padded_nibbles[i] << 4) | padded_nibbles[i + 1];
+            key.push(byte)
+        }
+
+        key
     }
 }
 
@@ -43,6 +53,10 @@ impl Key {
             .collect::<Vec<(Nibble, Nibble)>>();
 
         Key::from(nibbles)
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        self.clone().into()
     }
 
     pub fn common_length(&self, other: &Key) -> usize {

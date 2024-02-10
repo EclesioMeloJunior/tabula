@@ -1,12 +1,8 @@
+use parity_scale_codec::Encode;
 use std::fmt::Debug;
 
-use blake2::{
-    digest::{Update, VariableOutput},
-    Blake2bVar,
-};
-
 pub trait Hasher: Clone + Debug {
-    type Out: Debug + PartialEq + Clone;
+    type Out: Debug + PartialEq + Clone + Encode + Into<Vec<u8>>;
 
     fn hash(input: &[u8]) -> Self::Out;
 }
@@ -17,10 +13,11 @@ impl Hasher for Blake256Hasher {
     type Out = [u8; 32];
 
     fn hash(input: &[u8]) -> Self::Out {
-        let mut hasher = Blake2bVar::new(32).unwrap();
-        hasher.update(input);
-        let mut buf = [0u8; 32];
-        hasher.finalize_variable(&mut buf).unwrap();
-        buf
+        blake2b_simd::Params::new()
+            .hash_length(32)
+            .hash(input)
+            .as_bytes()
+            .try_into()
+            .expect("slice is always the necessary length")
     }
 }

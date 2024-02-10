@@ -1,9 +1,10 @@
 mod key;
 
-use std::{ascii::AsciiExt, default};
+use std::ops::Sub;
 
 use crate::crypto::hasher::Hasher;
 use key::Key;
+use parity_scale_codec::{Compact, Encode};
 
 fn split_child_index_from_key(
     partial_key: &Key,
@@ -24,6 +25,19 @@ type StorageValue = Option<Vec<u8>>;
 enum VersionedStorageValue<H: Hasher> {
     RawStorageValue(StorageValue),
     HashedStorageValue(H::Out),
+}
+
+impl<H: Hasher> VersionedStorageValue<H> {
+    fn encode(&self, version: u8) -> Option<Vec<u8>> {
+        match &self {
+            VersionedStorageValue::RawStorageValue(Some(v)) if version == 1 && v.len() > 32 => {
+                Some(H::hash(&v).encode())
+            }
+            VersionedStorageValue::RawStorageValue(Some(v)) => Some(v.encode()),
+            VersionedStorageValue::RawStorageValue(None) => None,
+            VersionedStorageValue::HashedStorageValue(hash) => Some(hash.encode()),
+        }
+    }
 }
 
 impl<H: Hasher> Default for VersionedStorageValue<H> {
@@ -120,6 +134,7 @@ impl<H: Hasher> Branch<H> {
                 bitmap |= one << idx;
             }
         }
+
         bitmap.to_le_bytes()
     }
 
@@ -158,31 +173,63 @@ impl<H: Hasher> Element<H> {
         element_key.eq(key) && storage_value_eq
     }
 
-    fn encoded_header(&self) -> Vec<u8> {
-        let mut encoded: Vec<u8> = Vec::with_capacity(1);
-        let (node_variant, partial_key_length): (u8, usize) = match self {
-            Element::Leaf(leaf) => match leaf.storage_value {
-                VersionedStorageValue::RawStorageValue(_) => (0b01000000, leaf.partial_key.0.len()),
-                VersionedStorageValue::HashedStorageValue(_) => {
-                    (0b00100000, leaf.partial_key.0.len())
-                }
-            },
-            Element::Branch(branch) => match branch.storage_value {
-                VersionedStorageValue::RawStorageValue(_) => {
-                    (0b10000000, branch.partial_key.0.len())
-                }
-                VersionedStorageValue::HashedStorageValue(_) => {
-                    (0b00010000, branch.partial_key.0.len())
-                }
-            },
-        };
+    fn encode(&self, version: u8) -> Vec<u8> {
+        match self {
+            Element::Leaf(leaf) => {
+                let header = leaf.encoded_header();
+                let partial_key: Vec<u8> = leaf.partial_key.clone().into();
 
-        encoded
+                let storage_value = match &leaf.storage_value {
+                    VersionedStorageValue::RawStorageValue(Some(v)) => {
+                        Some(if version == 1 && v.len() > 32 {
+                            H::hash(&v).encode()
+                        } else {
+                            v.encode()
+                        })
+                    }
+                    VersionedStorageValue::RawStorageValue(None) => None,
+                    VersionedStorageValue::HashedStorageValue(hash) => Some(hash.encode()),
+                };
+
+                if let Some(storage_value) = storage_value {
+                    return vec![header, partial_key, storage_value].concat();
+                }
+
+                vec![header, partial_key].concat()
+            }
+
+            Element::Branch(branch) => {
+                let mut encoded: Vec<u8> = Vec::new();
+                let header = branch.encoded_header();
+                encoded.extend(header);
+
+                let partial_key: Vec<u8> = branch.partial_key.clone().into();
+                encoded.extend(partial_key);
+
+                let children_bitmap = branch.children_bitmap();
+                encoded.extend(children_bitmap.to_vec());
+
+                if let Some(storage_value) = branch.storage_value.encode(version) {
+                    encoded.extend(storage_value);
+                }
+
+                for idx in 0..branch.children.len() {
+                    if let Some(child) = &branch.children[idx] {
+                        let encoded_child = child.encode(version);
+                        let to_append = if encoded_child.len() < 32 {
+                            encoded_child.encode()
+                        } else {
+                            let hashed: Vec<u8> = H::hash(&encoded_child).into();
+                            hashed.encode()
+                        };
+                        encoded.extend(to_append);
+                    }
+                }
+
+                encoded
+            }
+        }
     }
-}
-
-trait Encodable {
-    fn encode_header(&self) -> Vec<u8>;
 }
 
 type Node<H> = Option<Element<H>>;
@@ -200,28 +247,15 @@ pub enum TrieError {
 }
 
 impl<H: Hasher> Trie<H> {
-    fn encode(&self, version: u8) -> Vec<u8> {
-        match &self.root {
-            Some(element) => self.encode_trie_root(&element, version),
-            None => vec![0b00000000],
-        }
+    fn root_hash(&self, version: u8) -> H::Out {
+        H::hash(&self.encode_trie_root(version))
     }
 
-    fn encode_trie_root(&self, element: &Element<H>, version: u8) -> Vec<u8> {
-        match element {
-            Element::Leaf(leaf) => {
-                let header = leaf.encoded_header();
-                let partial_key: Vec<u8> = leaf.partial_key.into();
-                let storage_value = match leaf.storage_value {
-                    VersionedStorageValue::RawStorageValue(Some(v)) => {
-                        unimplemented!("need to scale encode the object")
-                    },
-                    VersionedStorageValue::RawStorageValue(None) => vec![],
-                    VersionedStorageValue::HashedStorageValue(hash) => hash.to_vec(),
-                }
-            }
+    fn encode_trie_root(&self, version: u8) -> Vec<u8> {
+        match &self.root {
+            Some(element) => element.encode(version),
+            None => vec![0b00000000],
         }
-        vec![]
     }
 
     fn get(&self, key: &Key) -> Result<StorageValue, TrieError> {
@@ -1166,5 +1200,22 @@ mod tests {
             let out = branch.encoded_header();
             assert_eq!(out, expected_enc_header)
         }
+    }
+
+    #[test]
+    fn test_trie_encoding_v0() {
+        let mut t = Trie::<Blake256Hasher> {
+            root: Default::default(),
+        };
+
+        t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
+        t.insert(Key::new(b"al"), Some([0; 40].to_vec())).unwrap();
+        t.insert(Key::new(b"alfa"), Some([0; 40].to_vec())).unwrap();
+
+        let expected_hash =
+            hex!("df1012a786cddcdfa4a8cf015e873677bc2e7a3c8b3579d9bae93117cbcfb7c1");
+        let root_hash = t.root_hash(0);
+
+        assert_eq!(expected_hash, root_hash);
     }
 }
