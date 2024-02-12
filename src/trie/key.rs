@@ -74,10 +74,10 @@ impl Key {
         }
 
         let at = self.0.get(index);
-        if index + 1 > self.0.len() {
+        if (index + 1) > self.0.len() {
             return (at, None);
         }
-        (at, Some(Key(self.0.as_slice()[index + 1..].to_vec())))
+        (at, Some(Key(self.0.as_slice()[(index + 1)..].to_vec())))
     }
 
     // new_partial_key returns a new instance of Key starting from index 0..lim
@@ -88,7 +88,7 @@ impl Key {
     pub fn encode_len(&self, variant: u8, remaining: u8) -> Vec<u8> {
         let mut length = self.0.len();
 
-        if length <= (remaining as usize) {
+        if length < (remaining as usize) {
             let encoded = variant | (length as u8);
             return encoded.to_le_bytes().to_vec();
         }
@@ -160,5 +160,13 @@ mod tests {
             let output = test.0.common_length(&test.1);
             assert_eq!(output, expected);
         }
+    }
+
+    #[test]
+    fn test_key_to_nibbles() {
+        let key = hex!("c2261276cc9d1f8598ea4b6a74b15c2f218f26c73add634897550b4003b26bc69406b1b580f3fd70373207c005e38adff268995cc38974ce0686df1364875f26f2c32b246ddc18835512c3f9969f5836");
+        let nibbles = Key::new(&key);
+
+        println!("{:?}", nibbles)
     }
 }

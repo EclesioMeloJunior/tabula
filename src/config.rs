@@ -11,17 +11,17 @@ pub mod genesis {
     use serde::Deserialize;
     use std::collections::HashMap;
 
-    #[derive(Deserialize)]
+    #[derive(Debug, Deserialize)]
     pub struct GenesisRaw {
         pub top: HashMap<String, String>,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Debug, Deserialize)]
     pub struct Genesis {
         pub raw: GenesisRaw,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Debug, Deserialize)]
     pub struct RawChainSpec {
         pub name: String,
         pub id: String,
@@ -54,6 +54,7 @@ pub mod parser {
         }
     }
 
+    #[derive(Debug, Clone)]
     pub struct RawChainSpecJSONParser;
     impl ParserFromStr for RawChainSpecJSONParser {
         type Output = genesis::RawChainSpec;

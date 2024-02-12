@@ -1,10 +1,8 @@
-mod key;
-
-use std::ops::Sub;
+pub mod key;
 
 use crate::crypto::hasher::Hasher;
 use key::Key;
-use parity_scale_codec::{Compact, Encode};
+use parity_scale_codec::Encode;
 
 fn split_child_index_from_key(
     partial_key: &Key,
@@ -19,7 +17,11 @@ fn split_child_index_from_key(
     return Ok((child_index, rest));
 }
 
+type TrieVersion = u8;
 type StorageValue = Option<Vec<u8>>;
+
+pub const V0: TrieVersion = 0;
+pub const V1: TrieVersion = 1;
 
 #[derive(Debug, PartialEq, Clone)]
 enum VersionedStorageValue<H: Hasher> {
@@ -177,25 +179,14 @@ impl<H: Hasher> Element<H> {
         match self {
             Element::Leaf(leaf) => {
                 let header = leaf.encoded_header();
-                let partial_key: Vec<u8> = leaf.partial_key.clone().into();
-
-                let storage_value = match &leaf.storage_value {
-                    VersionedStorageValue::RawStorageValue(Some(v)) => {
-                        Some(if version == 1 && v.len() > 32 {
-                            H::hash(&v).encode()
-                        } else {
-                            v.encode()
-                        })
-                    }
-                    VersionedStorageValue::RawStorageValue(None) => None,
-                    VersionedStorageValue::HashedStorageValue(hash) => Some(hash.encode()),
-                };
+                let key: Vec<u8> = leaf.partial_key.clone().into();
+                let storage_value = leaf.storage_value.encode(version);
 
                 if let Some(storage_value) = storage_value {
-                    return vec![header, partial_key, storage_value].concat();
+                    return vec![header, key, storage_value].concat();
                 }
 
-                vec![header, partial_key].concat()
+                vec![header, key].concat()
             }
 
             Element::Branch(branch) => {
@@ -203,8 +194,8 @@ impl<H: Hasher> Element<H> {
                 let header = branch.encoded_header();
                 encoded.extend(header);
 
-                let partial_key: Vec<u8> = branch.partial_key.clone().into();
-                encoded.extend(partial_key);
+                let key: Vec<u8> = branch.partial_key.clone().into();
+                encoded.extend(key);
 
                 let children_bitmap = branch.children_bitmap();
                 encoded.extend(children_bitmap.to_vec());
@@ -247,8 +238,14 @@ pub enum TrieError {
 }
 
 impl<H: Hasher> Trie<H> {
-    fn root_hash(&self, version: u8) -> H::Out {
-        H::hash(&self.encode_trie_root(version))
+    pub fn new() -> Self {
+        Trie::<H> {
+            root: Default::default(),
+        }
+    }
+
+    pub fn root_hash(&self, version: u8) -> Vec<u8> {
+        H::hash(&self.encode_trie_root(version)).encode()
     }
 
     fn encode_trie_root(&self, version: u8) -> Vec<u8> {
@@ -258,7 +255,7 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    fn get(&self, key: &Key) -> Result<StorageValue, TrieError> {
+    pub fn get(&self, key: &Key) -> Result<StorageValue, TrieError> {
         match self.root.clone() {
             Some(element) => self.get_recursively(element, key),
             None => Ok(None),
@@ -298,7 +295,7 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    fn insert(&mut self, key: Key, value: StorageValue) -> Result<(), TrieError> {
+    pub fn insert(&mut self, key: Key, value: StorageValue) -> Result<(), TrieError> {
         let root: Node<H> = match self.root.take() {
             Some(ref mut node) => self.insert_recursively(node, key, value)?,
             None => Some(Element::Leaf(Leaf {
@@ -333,7 +330,7 @@ impl<H: Hasher> Trie<H> {
         key: Key,
         value: StorageValue,
     ) -> Result<Node<H>, TrieError> {
-        if leaf_element.partial_key.eq(&key) || key.0.len() == 0 {
+        if leaf_element.partial_key.eq(&key) {
             leaf_element.storage_value = VersionedStorageValue::RawStorageValue(value);
             return Ok(Some(leaf_element.to_element()));
         }
@@ -358,10 +355,10 @@ impl<H: Hasher> Trie<H> {
             let child_index = leaf_element.as_child(common_prefix_len)?;
             branch_element.children[child_index] = Some(leaf_element.to_element());
 
-            let mut new_leaf = Leaf::new(key, VersionedStorageValue::RawStorageValue(value));
-            let child_index = new_leaf.as_child(common_prefix_len)?;
+            let (child_index, key_rest) = split_child_index_from_key(&key, common_prefix_len)?;
+            let new_leaf = Leaf::new(key_rest, VersionedStorageValue::RawStorageValue(value));
 
-            branch_element.children[child_index] = Some(new_leaf.to_element());
+            branch_element.children[child_index as usize] = Some(new_leaf.to_element());
             return Ok(Some(branch_element.to_element()));
         }
 
@@ -400,7 +397,7 @@ impl<H: Hasher> Trie<H> {
         key: Key,
         value: StorageValue,
     ) -> Result<Node<H>, TrieError> {
-        if branch_element.partial_key.eq(&key) || key.0.len() == 0 {
+        if branch_element.partial_key.eq(&key) {
             branch_element.storage_value = VersionedStorageValue::RawStorageValue(value);
             return Ok(Some(branch_element.to_element()));
         }
@@ -423,7 +420,7 @@ impl<H: Hasher> Trie<H> {
         //       that will be another child in the created branch
         let common_prefix_len = branch_element.partial_key.common_length(&key);
 
-        if common_prefix_len == 0 {
+        if common_prefix_len == 0 && branch_element.partial_key.0.len() > 0 {
             let mut branch_empty = Branch::<H>::new_empty();
             let child_index = branch_element.as_child(common_prefix_len)?;
             branch_empty.children[child_index] = Some(branch_element.to_element());
@@ -433,6 +430,20 @@ impl<H: Hasher> Trie<H> {
 
             branch_empty.children[child_index] = Some(new_leaf.to_element());
             return Ok(Some(branch_empty.to_element()));
+        }
+
+        if common_prefix_len == 0 && branch_element.partial_key.0.len() == 0 {
+            let (child_index, key_rest) = split_child_index_from_key(&key, 0)?;
+            branch_element.children[child_index as usize] =
+                match branch_element.children[child_index as usize].clone() {
+                    Some(ref mut element) => self.insert_recursively(element, key_rest, value)?,
+                    None => Some(
+                        Leaf::new(key_rest, VersionedStorageValue::RawStorageValue(value))
+                            .to_element(),
+                    ),
+                };
+
+            return Ok(Some(branch_element.to_element()));
         }
 
         if common_prefix_len == branch_element.partial_key.0.len() {
@@ -456,6 +467,8 @@ impl<H: Hasher> Trie<H> {
             return Ok(Some(branch.to_element()));
         }
 
+        // -----xxxxx
+        // ----yy
         let mut new_branch = Branch::<H>::new(
             key.new_partial_key(common_prefix_len),
             VersionedStorageValue::RawStorageValue(None),
@@ -1125,7 +1138,7 @@ mod tests {
                     partial_key: Key([0; 63].to_vec()),
                     storage_value: Default::default(),
                 },
-                vec![0b01111111],
+                vec![0b01111111, 0],
             ),
             (
                 Leaf::<Blake256Hasher> {
@@ -1153,7 +1166,7 @@ mod tests {
                     partial_key: Key([0; 31].to_vec()),
                     storage_value: VersionedStorageValue::HashedStorageValue([0; 32]),
                 },
-                vec![0b00111111],
+                vec![0b00111111, 0],
             ),
             (
                 Leaf::<Blake256Hasher> {
@@ -1184,7 +1197,7 @@ mod tests {
                     children: Default::default(),
                     storage_value: VersionedStorageValue::RawStorageValue(Some(vec![1, 2, 3])),
                 },
-                vec![0b11111111],
+                vec![0b11111111, 0],
             ),
             (
                 Branch::<Blake256Hasher> {
@@ -1216,6 +1229,6 @@ mod tests {
             hex!("df1012a786cddcdfa4a8cf015e873677bc2e7a3c8b3579d9bae93117cbcfb7c1");
         let root_hash = t.root_hash(0);
 
-        assert_eq!(expected_hash, root_hash);
+        assert_eq!(expected_hash.to_vec(), root_hash);
     }
 }
