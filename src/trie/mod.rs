@@ -1,5 +1,7 @@
 pub mod key;
 
+use std::{iter::Peekable, ops::Not, vec::IntoIter};
+
 use crate::crypto::hasher::Hasher;
 use key::Key;
 use parity_scale_codec::Encode;
@@ -14,7 +16,64 @@ fn split_child_index_from_key(
         _ => return Err(TrieError::CannotGetChildIndex),
     };
 
-    return Ok((child_index, rest));
+    Ok((child_index, rest))
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum NodeKind {
+    Leaf,
+    LeafWithHashed,
+    Branch,
+    BranchWithValue,
+    BranchWithHashed,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum DecodeError {
+    EmptyEncodedBytes,
+    UnexpectedEncodedEOF,
+    UnexpectedHeaderBytes,
+}
+
+fn decode_header(header_byte: u8) -> Option<(u8, NodeKind, u8)> {
+    match header_byte & 0b11110000 {
+        0b01000000 => Some((header_byte, NodeKind::Leaf, 0b00111111)),
+        0b10000000 => Some((header_byte, NodeKind::Branch, 0b00111111)),
+        0b11000000 => Some((header_byte, NodeKind::BranchWithValue, 0b00111111)),
+        0b00100000 => Some((header_byte, NodeKind::LeafWithHashed, 0b00011111)),
+        0b00010000 => Some((header_byte, NodeKind::BranchWithHashed, 0b00001111)),
+        _ => None,
+    }
+}
+
+fn decode_partial_key_length<'a>(
+    encoded: &'a mut Peekable<IntoIter<u8>>,
+) -> impl FnOnce((u8, NodeKind, u8)) -> Option<(NodeKind, u32)> + 'a {
+    move |(header, kind, len_mask): (u8, NodeKind, u8)| -> Option<(NodeKind, u32)> {
+        let mut partial_len: u32 = (header & len_mask) as u32;
+        if partial_len == (len_mask as u32) {
+            while let Some(current_byte) = encoded.next() {
+                if current_byte == 0 {
+                    break;
+                }
+                partial_len = partial_len.saturating_add(current_byte as u32);
+            }
+        }
+
+        Some((kind, partial_len))
+    }
+}
+
+fn decode_node<H: Hasher>(
+    encoded: &mut Peekable<IntoIter<u8>>,
+) -> Result<Option<Element<H>>, DecodeError> {
+    let header = encoded.next();
+
+    header
+        .and_then(decode_header)
+        .and_then(decode_partial_key_length(encoded));
+
+    Err(DecodeError::UnexpectedHeaderBytes)
 }
 
 type TrieVersion = u8;
@@ -32,7 +91,7 @@ enum VersionedStorageValue<H: Hasher> {
 impl<H: Hasher> VersionedStorageValue<H> {
     fn encode(&self, version: u8) -> Option<Vec<u8>> {
         match &self {
-            VersionedStorageValue::RawStorageValue(Some(v)) if version == 1 && v.len() > 32 => {
+            VersionedStorageValue::RawStorageValue(Some(v)) if version == V1 && v.len() > 32 => {
                 Some(H::hash(&v).encode())
             }
             VersionedStorageValue::RawStorageValue(Some(v)) => Some(v.encode()),
@@ -242,6 +301,19 @@ impl<H: Hasher> Trie<H> {
         Trie::<H> {
             root: Default::default(),
         }
+    }
+
+    pub fn decode(encoded: Vec<u8>) -> Result<Self, DecodeError> {
+        if encoded.len() == 0 {
+            return Err(DecodeError::EmptyEncodedBytes);
+        }
+
+        let mut encoded_iter = encoded.into_iter().peekable();
+        let mut trie = Trie::<H> {
+            root: decode_node(&mut encoded_iter)?,
+        };
+
+        Ok(trie)
     }
 
     pub fn root_hash(&self, version: u8) -> Vec<u8> {

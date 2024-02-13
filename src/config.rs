@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::fs;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ServerConfig {
     pub bootnodes: Vec<String>,
     pub chain_spec: String,
@@ -11,17 +11,17 @@ pub mod genesis {
     use serde::Deserialize;
     use std::collections::HashMap;
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Clone)]
     pub struct GenesisRaw {
         pub top: HashMap<String, String>,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Clone)]
     pub struct Genesis {
         pub raw: GenesisRaw,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Clone)]
     pub struct RawChainSpec {
         pub name: String,
         pub id: String,
