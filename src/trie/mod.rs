@@ -1,6 +1,6 @@
 pub mod key;
 
-use std::{iter::Peekable, ops::Not, vec::IntoIter};
+use std::{iter::Peekable, vec::IntoIter};
 
 use crate::crypto::hasher::Hasher;
 use key::Key;
@@ -35,22 +35,22 @@ enum DecodeError {
     UnexpectedHeaderBytes,
 }
 
-fn decode_header(header_byte: u8) -> Option<(u8, NodeKind, u8)> {
+fn decode_header(header_byte: u8) -> (u8, NodeKind, u8) {
     match header_byte & 0b11110000 {
-        0b01000000 => Some((header_byte, NodeKind::Leaf, 0b00111111)),
-        0b10000000 => Some((header_byte, NodeKind::Branch, 0b00111111)),
-        0b11000000 => Some((header_byte, NodeKind::BranchWithValue, 0b00111111)),
-        0b00100000 => Some((header_byte, NodeKind::LeafWithHashed, 0b00011111)),
-        0b00010000 => Some((header_byte, NodeKind::BranchWithHashed, 0b00001111)),
-        _ => None,
+        0b01000000 => (header_byte, NodeKind::Leaf, 0b00111111),
+        0b10000000 => (header_byte, NodeKind::Branch, 0b00111111),
+        0b11000000 => (header_byte, NodeKind::BranchWithValue, 0b00111111),
+        0b00100000 => (header_byte, NodeKind::LeafWithHashed, 0b00011111),
+        0b00010000 => (header_byte, NodeKind::BranchWithHashed, 0b00001111),
     }
 }
 
 fn decode_partial_key_length<'a>(
     encoded: &'a mut Peekable<IntoIter<u8>>,
-) -> impl FnOnce((u8, NodeKind, u8)) -> Option<(NodeKind, u32)> + 'a {
-    move |(header, kind, len_mask): (u8, NodeKind, u8)| -> Option<(NodeKind, u32)> {
+) -> impl FnOnce((u8, NodeKind, u8)) -> (NodeKind, u32) + 'a {
+    move |(header, kind, len_mask): (u8, NodeKind, u8)| -> (NodeKind, u32) {
         let mut partial_len: u32 = (header & len_mask) as u32;
+
         if partial_len == (len_mask as u32) {
             while let Some(current_byte) = encoded.next() {
                 if current_byte == 0 {
@@ -60,7 +60,23 @@ fn decode_partial_key_length<'a>(
             }
         }
 
-        Some((kind, partial_len))
+        (kind, partial_len)
+    }
+}
+
+fn decode_element<'a, H: Hasher>(
+    encoded: &'a mut Peekable<IntoIter<u8>>,
+) -> impl FnOnce((NodeKind, u32)) -> Element<H> + 'a {
+    move |(node_kind, partial_key_len): (NodeKind, u32)| -> Element<H> {
+        let encoded_partial_key = encoded.take(partial_key_len as usize).collect::<Vec<u8>>();
+        let partial_key = Key::new(&encoded_partial_key);
+
+        let
+
+        Element::Leaf(Leaf {
+            partial_key: partial_key,
+            storage_value: Default::default(),
+        })
     }
 }
 
@@ -69,9 +85,10 @@ fn decode_node<H: Hasher>(
 ) -> Result<Option<Element<H>>, DecodeError> {
     let header = encoded.next();
 
-    header
-        .and_then(decode_header)
-        .and_then(decode_partial_key_length(encoded));
+    let node: Option<Element<H>> = header
+        .map(decode_header)
+        .map(decode_partial_key_length(encoded))
+        .map(decode_element(encoded));
 
     Err(DecodeError::UnexpectedHeaderBytes)
 }
