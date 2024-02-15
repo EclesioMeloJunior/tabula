@@ -4,7 +4,7 @@ use std::{iter::Peekable, vec::IntoIter};
 
 use crate::crypto::hasher::Hasher;
 use key::Key;
-use parity_scale_codec::Encode;
+use parity_scale_codec::{Decode, Encode};
 
 fn split_child_index_from_key(
     partial_key: &Key,
@@ -42,6 +42,7 @@ fn decode_header(header_byte: u8) -> (u8, NodeKind, u8) {
         0b11000000 => (header_byte, NodeKind::BranchWithValue, 0b00111111),
         0b00100000 => (header_byte, NodeKind::LeafWithHashed, 0b00011111),
         0b00010000 => (header_byte, NodeKind::BranchWithHashed, 0b00001111),
+        _ => unreachable!(),
     }
 }
 
@@ -50,6 +51,10 @@ fn decode_partial_key_length<'a>(
 ) -> impl FnOnce((u8, NodeKind, u8)) -> (NodeKind, u32) + 'a {
     move |(header, kind, len_mask): (u8, NodeKind, u8)| -> (NodeKind, u32) {
         let mut partial_len: u32 = (header & len_mask) as u32;
+        println!(
+            "{:08b} {:08b} ({}) {}",
+            header, len_mask, len_mask, partial_len
+        );
 
         if partial_len == (len_mask as u32) {
             while let Some(current_byte) = encoded.next() {
@@ -67,16 +72,36 @@ fn decode_partial_key_length<'a>(
 fn decode_element<'a, H: Hasher>(
     encoded: &'a mut Peekable<IntoIter<u8>>,
 ) -> impl FnOnce((NodeKind, u32)) -> Element<H> + 'a {
+    let get_subvalue = |encoded: &'a mut Peekable<IntoIter<u8>>| -> StorageValue {
+        if encoded.len() > 0 {
+            let encoded_storage_value = encoded.collect::<Vec<u8>>();
+            let mut encoded_sv: &[u8] = encoded_storage_value.as_ref();
+            let value = Vec::<u8>::decode(&mut encoded_sv).unwrap();
+            return Some(value);
+        }
+
+        None
+    };
+
     move |(node_kind, partial_key_len): (NodeKind, u32)| -> Element<H> {
-        let encoded_partial_key = encoded.take(partial_key_len as usize).collect::<Vec<u8>>();
+        let actual_key_len = partial_key_len / 2 + partial_key_len % 2;
+        let encoded_partial_key = encoded.take(actual_key_len as usize).collect::<Vec<u8>>();
         let partial_key = Key::new(&encoded_partial_key);
 
-        let
-
-        Element::Leaf(Leaf {
-            partial_key: partial_key,
-            storage_value: Default::default(),
-        })
+        match node_kind {
+            NodeKind::Leaf => Element::Leaf(Leaf::<H> {
+                partial_key,
+                storage_value: VersionedStorageValue::RawStorageValue(get_subvalue(encoded)),
+            }),
+            NodeKind::LeafWithHashed => {
+                let subvalue = get_subvalue(encoded).map(|v| H::Out::try_from(v).unwrap());
+                Element::Leaf(Leaf::<H> {
+                    partial_key,
+                    storage_value: VersionedStorageValue::HashedStorageValue(subvalue.unwrap()),
+                })
+            }
+            _ => unimplemented!(),
+        }
     }
 }
 
@@ -90,7 +115,7 @@ fn decode_node<H: Hasher>(
         .map(decode_partial_key_length(encoded))
         .map(decode_element(encoded));
 
-    Err(DecodeError::UnexpectedHeaderBytes)
+    Ok(node)
 }
 
 type TrieVersion = u8;
@@ -318,19 +343,6 @@ impl<H: Hasher> Trie<H> {
         Trie::<H> {
             root: Default::default(),
         }
-    }
-
-    pub fn decode(encoded: Vec<u8>) -> Result<Self, DecodeError> {
-        if encoded.len() == 0 {
-            return Err(DecodeError::EmptyEncodedBytes);
-        }
-
-        let mut encoded_iter = encoded.into_iter().peekable();
-        let mut trie = Trie::<H> {
-            root: decode_node(&mut encoded_iter)?,
-        };
-
-        Ok(trie)
     }
 
     pub fn root_hash(&self, version: u8) -> Vec<u8> {
@@ -1319,5 +1331,25 @@ mod tests {
         let root_hash = t.root_hash(0);
 
         assert_eq!(expected_hash.to_vec(), root_hash);
+    }
+
+    #[test]
+    fn test_trie_decode_leaf() {
+        let mut t = Trie::<Blake256Hasher> {
+            root: Default::default(),
+        };
+
+        t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
+        println!("{:?}", t.root_hash(V0));
+
+        let encoded = t.encode_trie_root(V0);
+
+        let mut iter = encoded.into_iter().peekable();
+        let decoded_node = decode_node::<Blake256Hasher>(&mut iter).unwrap();
+
+        let a = Trie::<Blake256Hasher> { root: decoded_node };
+        let a_value = a.get(&Key::new(b"a")).unwrap();
+        println!("{:?}", a_value);
+        println!("{:?}", a.root_hash(V0));
     }
 }

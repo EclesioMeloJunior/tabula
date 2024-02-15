@@ -1,8 +1,9 @@
 use parity_scale_codec::Encode;
+use std::convert::TryFrom;
 use std::fmt::Debug;
 
 pub trait Hasher: Clone + Debug {
-    type Out: Debug + PartialEq + Clone + Encode + Into<Vec<u8>>;
+    type Out: Debug + PartialEq + Clone + Encode + Into<Vec<u8>> + TryFrom<Vec<u8>, Error = Vec<u8>>;
 
     fn hash(input: &[u8]) -> Self::Out;
 }
