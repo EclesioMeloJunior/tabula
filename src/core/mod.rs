@@ -13,7 +13,7 @@ pub fn start_client_from_genesis(server_settings: ServerConfig, chain_spec: RawC
     let state = State::from_genesis(chain_spec.genesis);
     println!(
         "genesis state root: {}",
-        hex::encode(state.trie.root_hash(V0))
+        hex::encode(state.trie.root_hash(V0).unwrap())
     );
 
     let client = Client { state };

@@ -1,4 +1,5 @@
 #![feature(array_chunks)]
+#![feature(associated_type_defaults)]
 
 mod config;
 mod core;
@@ -30,7 +31,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let expected =
         hex_literal::hex!("7e92439a94f79671f9cade9dff96a094519b9001a7432244d46ab644bb6f746f");
-    let root = t.root_hash(V0);
+    let root = t.root_hash(V0).unwrap();
 
     assert_eq!(root, expected);
     Ok(())

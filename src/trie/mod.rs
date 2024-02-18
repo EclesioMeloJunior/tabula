@@ -1,9 +1,16 @@
 pub mod codec;
 pub mod key;
+pub mod recorder;
 
+use std::vec::IntoIter;
+
+use self::codec::EncodedIter;
+use self::recorder::{InMemoryRecorder, Recorder, RecorderError};
 use crate::crypto::hasher::Hasher;
 use key::Key;
 use parity_scale_codec::Encode;
+
+type NodeRecorder = dyn Recorder<Key = Vec<u8>, Value = Vec<u8>>;
 
 fn split_child_index_from_key(
     partial_key: &Key,
@@ -180,7 +187,11 @@ impl<H: Hasher> Element<H> {
         element_key.eq(key) && storage_value_eq
     }
 
-    fn encode(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
+    fn encode(
+        &self,
+        version: TrieStorageValueThreshold,
+        recorder: &mut NodeRecorder,
+    ) -> Result<Vec<u8>, RecorderError> {
         match self {
             Element::Leaf(leaf) => {
                 let header = leaf.encoded_header(version);
@@ -188,10 +199,10 @@ impl<H: Hasher> Element<H> {
                 let storage_value = leaf.storage_value.encode(version);
 
                 if let Some(storage_value) = storage_value {
-                    return vec![header, key, storage_value].concat();
+                    return Ok(vec![header, key, storage_value].concat());
                 }
 
-                vec![header, key].concat()
+                Ok(vec![header, key].concat())
             }
 
             Element::Branch(branch) => {
@@ -211,18 +222,24 @@ impl<H: Hasher> Element<H> {
 
                 for idx in 0..branch.children.len() {
                     if let Some(child) = &branch.children[idx] {
-                        let encoded_child = child.encode(version);
-                        let to_append = if encoded_child.len() < 32 {
-                            encoded_child.encode()
-                        } else {
-                            let hashed: Vec<u8> = H::hash(&encoded_child).into();
-                            hashed.encode()
-                        };
-                        encoded.extend(to_append);
+                        match child.encode(version, recorder) {
+                            Err(err) => return Err(err),
+                            Ok(encoded_child) if encoded.len() < 32 => {
+                                encoded.extend(encoded_child.encode());
+                            }
+                            Ok(encoded_child) => {
+                                let hashed: Vec<u8> = H::hash(&encoded_child).into();
+                                match recorder.insert(&hashed, encoded_child) {
+                                    Err(err) => return Err(err),
+                                    Ok(_) => {}
+                                }
+                                encoded.extend(hashed.encode());
+                            }
+                        }
                     }
                 }
 
-                encoded
+                Ok(encoded)
             }
         }
     }
@@ -249,14 +266,26 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    pub fn root_hash(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
-        H::hash(&self.encode_trie_root(version)).encode()
+    pub fn root_hash(&self, version: TrieStorageValueThreshold) -> Result<Vec<u8>, RecorderError> {
+        let mut recorder = InMemoryRecorder::new();
+        let hashed_root = self
+            .encode_trie_root(version, &mut recorder)?
+            .hash::<H>()
+            .encode();
+
+        Ok(hashed_root)
     }
 
-    fn encode_trie_root(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
+    fn encode_trie_root(
+        &self,
+        version: TrieStorageValueThreshold,
+        recorder: &mut NodeRecorder,
+    ) -> Result<EncodedIter, RecorderError> {
         match &self.root {
-            Some(element) => element.encode(version),
-            None => vec![0b00000000],
+            Some(element) => Ok(EncodedIter::new(
+                element.encode(version, recorder)?.into_iter(),
+            )),
+            None => Ok(EncodedIter::new(vec![0b00000000].into_iter())),
         }
     }
 
@@ -335,7 +364,7 @@ impl<H: Hasher> Trie<H> {
         key: Key,
         value: StorageValue,
     ) -> Result<Node<H>, TrieError> {
-        if leaf_element.partial_key.eq(&key) {
+        if key.0.len() == 0 || leaf_element.partial_key.eq(&key) {
             leaf_element.storage_value = VersionedStorageValue::RawStorageValue(value);
             return Ok(Some(leaf_element.to_element()));
         }
@@ -492,11 +521,13 @@ impl<H: Hasher> Trie<H> {
 
 #[cfg(test)]
 mod tests {
+    use std::{iter::Peekable, option::Iter};
+
     use crate::crypto::hasher::Blake256Hasher;
 
     use super::*;
     use hex_literal::hex;
-    use tests::codec::EncodedTrieRoot;
+    use tests::codec::EncodedIter;
 
     #[test]
     fn trie_empty_insert_key_value() {
@@ -1106,26 +1137,28 @@ mod tests {
             partial_key: Key(vec![0, 1, 0]),
             storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
             children: [
-                Some(Element::Leaf(Default::default())),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(Element::Leaf(Default::default())),
                 None,
                 None,
                 None,
                 None,
                 None,
                 None,
+                //Some(Element::Leaf(Default::default())),
                 None,
                 None,
                 Some(Element::Leaf(Default::default())),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                //Some(Element::Leaf(Default::default())),
+                None,
             ],
         };
 
-        let expected_bitmap: [u8; 2] = [0b01000001, 0b10000000];
+        let expected_bitmap: [u8; 2] = [0b00000000, 0b00000001];
         assert_eq!(branch.children_bitmap(), expected_bitmap);
     }
 
@@ -1233,7 +1266,7 @@ mod tests {
 
         let expected_hash =
             hex!("df1012a786cddcdfa4a8cf015e873677bc2e7a3c8b3579d9bae93117cbcfb7c1");
-        let root_hash = t.root_hash(V0);
+        let root_hash = t.root_hash(V0).unwrap();
 
         assert_eq!(expected_hash.to_vec(), root_hash);
     }
@@ -1247,9 +1280,10 @@ mod tests {
         t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
         let prev_hash = t.root_hash(V0);
 
-        let encoded = t.encode_trie_root(V0);
-        let mut encoded_trie_root = EncodedTrieRoot::new(encoded.into_iter());
-        let decoded_node = codec::decode_node::<_, Blake256Hasher>(&mut encoded_trie_root).unwrap();
+        let mut recorder = InMemoryRecorder::new();
+        let mut encoded_iter = t.encode_trie_root(V0, &mut recorder).unwrap();
+        let decoded_node =
+            codec::decode_node::<Blake256Hasher>(&mut encoded_iter, &recorder).unwrap();
 
         let trie_after_decoding = Trie::<Blake256Hasher> { root: decoded_node };
         let next_hash = trie_after_decoding.root_hash(V0);
@@ -1265,9 +1299,10 @@ mod tests {
         t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
         let prev_hash = t.root_hash(V1);
 
-        let encoded = t.encode_trie_root(V1);
-        let mut encoded_trie_root = EncodedTrieRoot::new(encoded.into_iter());
-        let decoded_node = codec::decode_node::<_, Blake256Hasher>(&mut encoded_trie_root).unwrap();
+        let mut recorder = InMemoryRecorder::new();
+        let mut encoded_iter = t.encode_trie_root(V1, &mut recorder).unwrap();
+        let decoded_node =
+            codec::decode_node::<Blake256Hasher>(&mut encoded_iter, &recorder).unwrap();
 
         let trie_after_decoding = Trie::<Blake256Hasher> { root: decoded_node };
         let next_hash = trie_after_decoding.root_hash(V1);
@@ -1287,9 +1322,10 @@ mod tests {
 
         let prev_hash = t.root_hash(V0);
 
-        let encoded = t.encode_trie_root(V0);
-        let mut encoded_trie_root = EncodedTrieRoot::new(encoded.into_iter());
-        let decoded_node = codec::decode_node::<_, Blake256Hasher>(&mut encoded_trie_root).unwrap();
+        let mut recorder = InMemoryRecorder::new();
+        let mut encoded_iter = t.encode_trie_root(V0, &mut recorder).unwrap();
+        let decoded_node =
+            codec::decode_node::<Blake256Hasher>(&mut encoded_iter, &recorder).unwrap();
 
         let trie_after_decoding = Trie::<Blake256Hasher> { root: decoded_node };
         let next_hash = trie_after_decoding.root_hash(V0);

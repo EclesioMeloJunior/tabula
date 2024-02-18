@@ -1,3 +1,5 @@
+use std::{iter, mem};
+
 use super::*;
 use parity_scale_codec::{Decode, Input};
 
@@ -20,22 +22,34 @@ pub enum DecodeError {
     FailToGetPartialKeyByte,
     ExpectedHashedFoundEmpty,
     FailToGetChildrenBitmapByte,
+    EncodedChildNotRecorded,
 }
 
-pub struct EncodedTrieRoot<I: ExactSizeIterator + Iterator<Item = u8>> {
-    pub iter: I,
+pub struct EncodedIter {
+    pub iter: IntoIter<u8>,
 }
 
-impl<I> EncodedTrieRoot<I>
-where
-    I: ExactSizeIterator + Iterator<Item = u8>,
-{
-    pub fn new(iter: I) -> Self {
-        EncodedTrieRoot { iter }
+impl Default for EncodedIter {
+    fn default() -> Self {
+        EncodedIter {
+            iter: vec![].into_iter(),
+        }
     }
 }
 
-impl<I: ExactSizeIterator + Iterator<Item = u8>> Input for EncodedTrieRoot<I> {
+impl EncodedIter {
+    pub fn new(iter: IntoIter<u8>) -> Self {
+        EncodedIter { iter }
+    }
+
+    pub fn hash<H: Hasher>(&mut self) -> H::Out {
+        let mut encoded_iter = mem::take(self);
+        let encoded: Vec<u8> = encoded_iter.iter.collect();
+        H::hash(&encoded)
+    }
+}
+
+impl Input for EncodedIter {
     fn read(&mut self, into: &mut [u8]) -> Result<(), CodecError> {
         if into.len() > self.iter.len() {
             return Err("Not enough data to fill buffer".into());
@@ -68,14 +82,7 @@ fn decode_header(header_byte: u8) -> (NodeKind, u8) {
     }
 }
 
-fn decode_partial_key_length<T>(
-    encoded: &mut EncodedTrieRoot<T>,
-    header: u8,
-    pk_len_mask: u8,
-) -> u32
-where
-    T: ExactSizeIterator + Iterator<Item = u8>,
-{
+fn decode_partial_key_length(encoded: &mut EncodedIter, header: u8, pk_len_mask: u8) -> u32 {
     let mut partial_len: u32 = (header & pk_len_mask) as u32;
     if partial_len == (pk_len_mask as u32) || partial_len == 255 {
         while let Some(current_byte) = encoded.iter.next() {
@@ -90,13 +97,13 @@ where
     partial_len
 }
 
-fn decode_element<T, H>(
-    encoded: &mut EncodedTrieRoot<T>,
+fn decode_element<H>(
+    encoded: &mut EncodedIter,
     node_kind: NodeKind,
     pk_len: u32,
+    recorder: &NodeRecorder,
 ) -> Result<Element<H>, DecodeError>
 where
-    T: ExactSizeIterator + Iterator<Item = u8>,
     H: Hasher,
 {
     let actual_key_len = (pk_len / 2 + pk_len % 2) as usize;
@@ -142,11 +149,14 @@ where
             let mut child_bitmap: [u8; 2] = Default::default();
             for idx in 0..2 {
                 if let Some(byte) = encoded.iter.next() {
+                    print!("{:08b} ", byte.clone());
                     child_bitmap[idx] = byte.clone()
                 } else {
                     return Err(DecodeError::FailToGetChildrenBitmapByte);
                 }
             }
+
+            println!("");
 
             let mut child_bitmap = u16::from_le_bytes(child_bitmap);
             let mut has_child_at: [bool; 16] = Default::default();
@@ -185,10 +195,27 @@ where
 
             let mut children: [Option<Element<H>>; 16] = Default::default();
             for idx in (0..).take(16) {
-                if has_child_at[idx] {
-                    let decoded_node = decode_node(encoded).unwrap();
-                    children[idx] = decoded_node;
+                if !has_child_at[idx] {
+                    continue;
                 }
+
+                let encode_child = {
+                    let encoded_child = Vec::<u8>::decode(encoded).unwrap();
+                    if encoded_child.len() < 32 {
+                        encoded_child
+                    } else {
+                        if let Some(encoded_child) = recorder.get(&encoded_child).unwrap() {
+                            encoded_child.clone()
+                        } else {
+                            return Err(DecodeError::EncodedChildNotRecorded);
+                        }
+                    }
+                };
+
+                let mut encoded_child_iter = EncodedIter::new(encode_child.into_iter());
+                let decoded_node = decode_node(&mut encoded_child_iter, recorder).unwrap();
+                assert_eq!(encoded_child_iter.remaining_len(), Ok(Some(0)));
+                children[idx] = decoded_node;
             }
 
             Ok(Element::Branch(Box::new(Branch {
@@ -200,17 +227,19 @@ where
     }
 }
 
-pub fn decode_node<T, H>(
-    encoded: &mut EncodedTrieRoot<T>,
+pub fn decode_node<H>(
+    encoded: &mut EncodedIter,
+    recorder: &NodeRecorder,
 ) -> Result<Option<Element<H>>, DecodeError>
 where
-    T: ExactSizeIterator + Iterator<Item = u8>,
     H: Hasher,
 {
     if let Some(header) = encoded.iter.next() {
         let (node_kind, pk_len_mask) = decode_header(header);
         let pk_len = decode_partial_key_length(encoded, header, pk_len_mask);
-        let node = decode_element(encoded, node_kind, pk_len)?;
+        let node = decode_element(encoded, node_kind, pk_len, recorder)?;
+
+        assert_eq!(encoded.remaining_len(), Ok(Some(0)));
         return Ok(Some(node));
     }
 
