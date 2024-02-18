@@ -1,10 +1,9 @@
+pub mod codec;
 pub mod key;
-
-use std::{iter::Peekable, vec::IntoIter};
 
 use crate::crypto::hasher::Hasher;
 use key::Key;
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::Encode;
 
 fn split_child_index_from_key(
     partial_key: &Key,
@@ -19,110 +18,11 @@ fn split_child_index_from_key(
     Ok((child_index, rest))
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum NodeKind {
-    Leaf,
-    LeafWithHashed,
-    Branch,
-    BranchWithValue,
-    BranchWithHashed,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum DecodeError {
-    EmptyEncodedBytes,
-    UnexpectedEncodedEOF,
-    UnexpectedHeaderBytes,
-}
-
-fn decode_header(header_byte: u8) -> (u8, NodeKind, u8) {
-    match header_byte & 0b11110000 {
-        0b01000000 => (header_byte, NodeKind::Leaf, 0b00111111),
-        0b10000000 => (header_byte, NodeKind::Branch, 0b00111111),
-        0b11000000 => (header_byte, NodeKind::BranchWithValue, 0b00111111),
-        0b00100000 => (header_byte, NodeKind::LeafWithHashed, 0b00011111),
-        0b00010000 => (header_byte, NodeKind::BranchWithHashed, 0b00001111),
-        _ => unreachable!(),
-    }
-}
-
-fn decode_partial_key_length<'a>(
-    encoded: &'a mut Peekable<IntoIter<u8>>,
-) -> impl FnOnce((u8, NodeKind, u8)) -> (NodeKind, u32) + 'a {
-    move |(header, kind, len_mask): (u8, NodeKind, u8)| -> (NodeKind, u32) {
-        let mut partial_len: u32 = (header & len_mask) as u32;
-        println!(
-            "{:08b} {:08b} ({}) {}",
-            header, len_mask, len_mask, partial_len
-        );
-
-        if partial_len == (len_mask as u32) {
-            while let Some(current_byte) = encoded.next() {
-                if current_byte == 0 {
-                    break;
-                }
-                partial_len = partial_len.saturating_add(current_byte as u32);
-            }
-        }
-
-        (kind, partial_len)
-    }
-}
-
-fn decode_element<'a, H: Hasher>(
-    encoded: &'a mut Peekable<IntoIter<u8>>,
-) -> impl FnOnce((NodeKind, u32)) -> Element<H> + 'a {
-    let get_subvalue = |encoded: &'a mut Peekable<IntoIter<u8>>| -> StorageValue {
-        if encoded.len() > 0 {
-            let encoded_storage_value = encoded.collect::<Vec<u8>>();
-            let mut encoded_sv: &[u8] = encoded_storage_value.as_ref();
-            let value = Vec::<u8>::decode(&mut encoded_sv).unwrap();
-            return Some(value);
-        }
-
-        None
-    };
-
-    move |(node_kind, partial_key_len): (NodeKind, u32)| -> Element<H> {
-        let actual_key_len = partial_key_len / 2 + partial_key_len % 2;
-        let encoded_partial_key = encoded.take(actual_key_len as usize).collect::<Vec<u8>>();
-        let partial_key = Key::new(&encoded_partial_key);
-
-        match node_kind {
-            NodeKind::Leaf => Element::Leaf(Leaf::<H> {
-                partial_key,
-                storage_value: VersionedStorageValue::RawStorageValue(get_subvalue(encoded)),
-            }),
-            NodeKind::LeafWithHashed => {
-                let subvalue = get_subvalue(encoded).map(|v| H::Out::try_from(v).unwrap());
-                Element::Leaf(Leaf::<H> {
-                    partial_key,
-                    storage_value: VersionedStorageValue::HashedStorageValue(subvalue.unwrap()),
-                })
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
-
-fn decode_node<H: Hasher>(
-    encoded: &mut Peekable<IntoIter<u8>>,
-) -> Result<Option<Element<H>>, DecodeError> {
-    let header = encoded.next();
-
-    let node: Option<Element<H>> = header
-        .map(decode_header)
-        .map(decode_partial_key_length(encoded))
-        .map(decode_element(encoded));
-
-    Ok(node)
-}
-
-type TrieVersion = u8;
+type TrieStorageValueThreshold = usize;
 type StorageValue = Option<Vec<u8>>;
 
-pub const V0: TrieVersion = 0;
-pub const V1: TrieVersion = 1;
+pub const V0: TrieStorageValueThreshold = usize::MAX;
+pub const V1: TrieStorageValueThreshold = 32;
 
 #[derive(Debug, PartialEq, Clone)]
 enum VersionedStorageValue<H: Hasher> {
@@ -131,9 +31,9 @@ enum VersionedStorageValue<H: Hasher> {
 }
 
 impl<H: Hasher> VersionedStorageValue<H> {
-    fn encode(&self, version: u8) -> Option<Vec<u8>> {
+    fn encode(&self, version: TrieStorageValueThreshold) -> Option<Vec<u8>> {
         match &self {
-            VersionedStorageValue::RawStorageValue(Some(v)) if version == V1 && v.len() > 32 => {
+            VersionedStorageValue::RawStorageValue(Some(v)) if v.len() > version => {
                 Some(H::hash(&v).encode())
             }
             VersionedStorageValue::RawStorageValue(Some(v)) => Some(v.encode()),
@@ -184,8 +84,12 @@ impl<H: Hasher> Leaf<H> {
         }
     }
 
-    fn encoded_header(&self) -> Vec<u8> {
-        let (variant, remaining): (u8, u8) = match self.storage_value {
+    fn encoded_header(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
+        let (variant, remaining): (u8, u8) = match &self.storage_value {
+            VersionedStorageValue::RawStorageValue(None) => (0b01000000, 0b00111111),
+            VersionedStorageValue::RawStorageValue(Some(v)) if v.len() > version => {
+                (0b00100000, 0b00011111)
+            }
             VersionedStorageValue::RawStorageValue(_) => (0b01000000, 0b00111111),
             VersionedStorageValue::HashedStorageValue(_) => (0b00100000, 0b00011111),
         };
@@ -276,10 +180,10 @@ impl<H: Hasher> Element<H> {
         element_key.eq(key) && storage_value_eq
     }
 
-    fn encode(&self, version: u8) -> Vec<u8> {
+    fn encode(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
         match self {
             Element::Leaf(leaf) => {
-                let header = leaf.encoded_header();
+                let header = leaf.encoded_header(version);
                 let key: Vec<u8> = leaf.partial_key.clone().into();
                 let storage_value = leaf.storage_value.encode(version);
 
@@ -345,11 +249,11 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    pub fn root_hash(&self, version: u8) -> Vec<u8> {
+    pub fn root_hash(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
         H::hash(&self.encode_trie_root(version)).encode()
     }
 
-    fn encode_trie_root(&self, version: u8) -> Vec<u8> {
+    fn encode_trie_root(&self, version: TrieStorageValueThreshold) -> Vec<u8> {
         match &self.root {
             Some(element) => element.encode(version),
             None => vec![0b00000000],
@@ -592,6 +496,7 @@ mod tests {
 
     use super::*;
     use hex_literal::hex;
+    use tests::codec::EncodedTrieRoot;
 
     #[test]
     fn trie_empty_insert_key_value() {
@@ -1279,7 +1184,7 @@ mod tests {
         ];
 
         for (leaf, expected_enc_header) in leafs {
-            let out = leaf.encoded_header();
+            let out = leaf.encoded_header(V0);
             assert_eq!(out, expected_enc_header);
         }
 
@@ -1328,7 +1233,7 @@ mod tests {
 
         let expected_hash =
             hex!("df1012a786cddcdfa4a8cf015e873677bc2e7a3c8b3579d9bae93117cbcfb7c1");
-        let root_hash = t.root_hash(0);
+        let root_hash = t.root_hash(V0);
 
         assert_eq!(expected_hash.to_vec(), root_hash);
     }
@@ -1340,16 +1245,54 @@ mod tests {
         };
 
         t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
-        println!("{:?}", t.root_hash(V0));
+        let prev_hash = t.root_hash(V0);
 
         let encoded = t.encode_trie_root(V0);
+        let mut encoded_trie_root = EncodedTrieRoot::new(encoded.into_iter());
+        let decoded_node = codec::decode_node::<_, Blake256Hasher>(&mut encoded_trie_root).unwrap();
 
-        let mut iter = encoded.into_iter().peekable();
-        let decoded_node = decode_node::<Blake256Hasher>(&mut iter).unwrap();
+        let trie_after_decoding = Trie::<Blake256Hasher> { root: decoded_node };
+        let next_hash = trie_after_decoding.root_hash(V0);
+        assert_eq!(prev_hash, next_hash);
+    }
 
-        let a = Trie::<Blake256Hasher> { root: decoded_node };
-        let a_value = a.get(&Key::new(b"a")).unwrap();
-        println!("{:?}", a_value);
-        println!("{:?}", a.root_hash(V0));
+    #[test]
+    fn test_trie_decode_leaf_with_hashed_value() {
+        let mut t = Trie::<Blake256Hasher> {
+            root: Default::default(),
+        };
+
+        t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
+        let prev_hash = t.root_hash(V1);
+
+        let encoded = t.encode_trie_root(V1);
+        let mut encoded_trie_root = EncodedTrieRoot::new(encoded.into_iter());
+        let decoded_node = codec::decode_node::<_, Blake256Hasher>(&mut encoded_trie_root).unwrap();
+
+        let trie_after_decoding = Trie::<Blake256Hasher> { root: decoded_node };
+        let next_hash = trie_after_decoding.root_hash(V1);
+        assert_eq!(prev_hash, next_hash);
+    }
+
+    #[test]
+    fn test_trie_decode_with_branches_v0() {
+        let mut t = Trie::<Blake256Hasher> {
+            root: Default::default(),
+        };
+
+        t.insert(Key::new(b"a"), Some([0; 40].to_vec())).unwrap();
+        t.insert(Key::new(b"al"), Some([0; 40].to_vec())).unwrap();
+        t.insert(Key::new(b"alpha"), Some([0; 40].to_vec()))
+            .unwrap();
+
+        let prev_hash = t.root_hash(V0);
+
+        let encoded = t.encode_trie_root(V0);
+        let mut encoded_trie_root = EncodedTrieRoot::new(encoded.into_iter());
+        let decoded_node = codec::decode_node::<_, Blake256Hasher>(&mut encoded_trie_root).unwrap();
+
+        let trie_after_decoding = Trie::<Blake256Hasher> { root: decoded_node };
+        let next_hash = trie_after_decoding.root_hash(V0);
+        assert_eq!(prev_hash, next_hash);
     }
 }
