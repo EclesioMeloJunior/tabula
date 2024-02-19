@@ -501,8 +501,6 @@ impl<H: Hasher> Trie<H> {
             return Ok(Some(branch.to_element()));
         }
 
-        // -----xxxxx
-        // ----yy
         let mut new_branch = Branch::<H>::new(
             key.new_partial_key(common_prefix_len),
             VersionedStorageValue::RawStorageValue(None),
@@ -1282,6 +1280,7 @@ mod tests {
 
         let mut recorder = InMemoryRecorder::new();
         let mut encoded_iter = t.encode_trie_root(V0, &mut recorder).unwrap();
+
         let decoded_node =
             codec::decode_node::<Blake256Hasher>(&mut encoded_iter, &recorder).unwrap();
 
@@ -1323,7 +1322,9 @@ mod tests {
         let prev_hash = t.root_hash(V0);
 
         let mut recorder = InMemoryRecorder::new();
+
         let mut encoded_iter = t.encode_trie_root(V0, &mut recorder).unwrap();
+
         let decoded_node =
             codec::decode_node::<Blake256Hasher>(&mut encoded_iter, &recorder).unwrap();
 

@@ -107,17 +107,13 @@ where
     H: Hasher,
 {
     let actual_key_len = (pk_len / 2 + pk_len % 2) as usize;
-    let mut encoded_partial_key: Vec<u8> = Vec::with_capacity(actual_key_len);
+    let mut encoded_partial_key: Vec<u8> = vec![0; actual_key_len];
+    encoded.read(&mut encoded_partial_key).unwrap();
 
-    for _ in 0..actual_key_len {
-        if let Some(byte) = encoded.iter.next() {
-            encoded_partial_key.push(byte.clone())
-        } else {
-            return Err(DecodeError::FailToGetPartialKeyByte);
-        }
+    let mut partial_key = Key::new(&encoded_partial_key);
+    if pk_len % 2 == 1 {
+        partial_key.0.remove(0);
     }
-
-    let partial_key = Key::new(&encoded_partial_key);
 
     match node_kind {
         NodeKind::Leaf => {
@@ -128,10 +124,12 @@ where
                 VersionedStorageValue::RawStorageValue(None)
             };
 
-            Ok(Element::Leaf(Leaf::<H> {
+            let leaf = Leaf::<H> {
                 partial_key,
                 storage_value,
-            }))
+            };
+
+            Ok(Element::Leaf(leaf))
         }
         NodeKind::LeafWithHashed => {
             let mut hashed_value: [u8; 32] = Default::default();
@@ -149,14 +147,11 @@ where
             let mut child_bitmap: [u8; 2] = Default::default();
             for idx in 0..2 {
                 if let Some(byte) = encoded.iter.next() {
-                    print!("{:08b} ", byte.clone());
                     child_bitmap[idx] = byte.clone()
                 } else {
                     return Err(DecodeError::FailToGetChildrenBitmapByte);
                 }
             }
-
-            println!("");
 
             let mut child_bitmap = u16::from_le_bytes(child_bitmap);
             let mut has_child_at: [bool; 16] = Default::default();
@@ -165,9 +160,7 @@ where
                     break;
                 }
 
-                println!("{:016b}", child_bitmap);
                 if (child_bitmap & 1) == 1 {
-                    println!("true");
                     has_child_at[idx as usize] = true;
                 }
 
@@ -177,9 +170,7 @@ where
             let storage_value = match node_kind {
                 NodeKind::Branch => VersionedStorageValue::RawStorageValue(None),
                 NodeKind::BranchWithValue => {
-                    println!("branch with value!");
                     let decoded = Vec::<u8>::decode(encoded).unwrap();
-                    println!("decoded: {:?}", decoded);
                     VersionedStorageValue::RawStorageValue(Some(decoded))
                 }
                 NodeKind::BranchWithHashed => {
@@ -218,11 +209,13 @@ where
                 children[idx] = decoded_node;
             }
 
-            Ok(Element::Branch(Box::new(Branch {
+            let branch = Branch {
                 children,
                 partial_key,
                 storage_value,
-            })))
+            };
+
+            Ok(Element::Branch(Box::new(branch)))
         }
     }
 }

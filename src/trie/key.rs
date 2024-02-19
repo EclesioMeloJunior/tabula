@@ -23,7 +23,7 @@ impl Into<Vec<u8>> for Key {
             return vec![];
         }
 
-        let padded_nibbles = if self.0.len() % 2 != 0 {
+        let padded_nibbles = if (self.0.len() % 2) != 0 {
             let mut padded = vec![0];
             padded.extend(self.0);
             padded
@@ -131,11 +131,6 @@ mod tests {
 
         let back_to_bytes: Vec<u8> = encoded.into();
         assert_eq!(input.to_vec(), back_to_bytes);
-
-        let encoded = Key::new(&[2, 15, 15]);
-        let bytes: Vec<u8> = encoded.into();
-
-        println!("{:?}", bytes);
     }
 
     #[test]
@@ -160,13 +155,5 @@ mod tests {
             let output = test.0.common_length(&test.1);
             assert_eq!(output, expected);
         }
-    }
-
-    #[test]
-    fn test_key_to_nibbles() {
-        let key = hex!("c2261276cc9d1f8598ea4b6a74b15c2f218f26c73add634897550b4003b26bc69406b1b580f3fd70373207c005e38adff268995cc38974ce0686df1364875f26f2c32b246ddc18835512c3f9969f5836");
-        let nibbles = Key::new(&key);
-
-        println!("{:?}", nibbles)
     }
 }
