@@ -1,6 +1,7 @@
 pub mod codec;
 pub mod key;
 pub mod recorder;
+pub mod tlt;
 
 use std::vec::IntoIter;
 
@@ -522,13 +523,9 @@ impl<H: Hasher> Trie<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::{iter::Peekable, option::Iter};
-
-    use crate::crypto::hasher::Blake256Hasher;
-
     use super::*;
+    use crate::crypto::hasher::Blake256Hasher;
     use hex_literal::hex;
-    use tests::codec::EncodedIter;
 
     #[test]
     fn trie_empty_insert_key_value() {
