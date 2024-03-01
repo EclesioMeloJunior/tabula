@@ -1,3 +1,6 @@
+#[derive(Debug, PartialEq)]
+pub enum StorageError {}
+
 pub trait Storage {
     type Key;
     type Value;

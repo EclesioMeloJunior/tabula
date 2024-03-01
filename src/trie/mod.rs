@@ -268,11 +268,17 @@ pub enum TrieError {
 
 impl<H: Hasher> Storage for Trie<H> {
     type Key = Key;
-    type Value = StorageValue;
+    type Value = Vec<u8>;
     type Error = TrieError;
 
     fn get(&self, key: &Self::Key) -> Self::StorageResult<Option<&Self::Value>> {
-        unimplemented!()
+        match self.root.clone() {
+            Some(element) => match self.get_recursively(element, key) {
+                Ok(r) => Ok(r.as_ref()),
+                Err(err) => Err(err),
+            },
+            None => Ok(None),
+        }
     }
 
     fn insert(&mut self, key: Self::Key, value: Self::Value) -> Self::StorageResult<()> {
@@ -323,13 +329,6 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    pub fn get(&self, key: &Key) -> Result<StorageValue, TrieError> {
-        match self.root.clone() {
-            Some(element) => self.get_recursively(element, key),
-            None => Ok(None),
-        }
-    }
-
     fn get_recursively(&self, element: Element<H>, key: &Key) -> Result<StorageValue, TrieError> {
         match element {
             Element::Leaf(leaf) => {
@@ -339,7 +338,7 @@ impl<H: Hasher> Trie<H> {
 
                 match leaf.storage_value {
                     VersionedStorageValue::RawStorageValue(value) => Ok(value.clone()),
-                    VersionedStorageValue::HashedStorageValue(_) => unimplemented!(),
+                    VersionedStorageValue::HashedStorageValue(hashed_value) => {}
                 }
             }
             Element::Branch(branch) => {

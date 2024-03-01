@@ -1,4 +1,4 @@
-use super::{Trie, TrieStorageValueThreshold};
+use super::{key::Key, traits::Storage, Trie, TrieError, TrieStorageValueThreshold};
 use crate::crypto::hasher::Hasher;
 
 use super::changeset::Changeset;
@@ -65,7 +65,10 @@ where
 }
 
 #[derive(Debug, PartialEq)]
-pub enum TLTError {}
+pub enum TLTError {
+    FailToGetFromNestedTransaction,
+    FailToGetFromTrie(TrieError),
+}
 
 pub type TLTResult<T> = std::result::Result<T, TLTError>;
 
@@ -89,6 +92,31 @@ where
     }
 
     fn get(&self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
+        {
+            if let Some(current) = &self.nested_transactions.current {
+                match current.get(&key) {
+                    Err(_) => return Err(TLTError::FailToGetFromNestedTransaction),
+                    Ok(r) => match r {
+                        Some(value) => return Ok(Some(value.clone())),
+                        _ => {}
+                    },
+                }
+            }
+        }
+
+        {
+            let nibble_encoded_key = Key::new(&key);
+            match self.trie.get(&nibble_encoded_key) {
+                Err(err) => return Err(TLTError::FailToGetFromTrie(err)),
+                Ok(r) => match r {
+                    Some(value) => return Ok(Some(value.clone())),
+                    _ => {}
+                },
+            }
+        }
+
+        {}
+
         Ok(Some(vec![]))
     }
 }
