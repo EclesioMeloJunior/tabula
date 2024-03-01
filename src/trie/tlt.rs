@@ -1,34 +1,104 @@
+use super::{Trie, TrieStorageValueThreshold};
 use crate::crypto::hasher::Hasher;
-use std::error::Error;
 
-use super::Trie;
+use super::changeset::Changeset;
 
-pub trait Storage {
-    type Key;
-    type Value;
-
-    fn get(key: &Self::Key) -> Result<Option<&Self::Value>, Box<dyn Error>>;
-    fn set(key: Self::Key, value: Self::Value) -> Result<(), Box<dyn Error>>;
-
-    // removes the value and returns if it exists
-    fn remove(key: &Self::Key) -> Result<Option<Self::Value>, Box<dyn Error>>;
+pub struct NestedTransaction {
+    current: Option<Changeset>,
+    transactions: Vec<Changeset>,
 }
 
-pub trait Transactions {
-    fn start_transaction();
-    fn rollback_transaction();
-    fn commit_transaction();
+#[derive(Debug, PartialEq)]
+pub enum NestedTransactionError {
+    NoTransactionsToCommit,
+    NoTransactionsToRollback,
+}
+
+impl NestedTransaction {
+    pub fn new() -> Self {
+        NestedTransaction {
+            current: None,
+            transactions: vec![],
+        }
+    }
+
+    fn commit_transaction(&mut self) -> Result<(), NestedTransactionError> {
+        match (self.current.take(), self.transactions.pop()) {
+            (Some(current_change_set), Some(previous_transaction)) => {
+                current_change_set.merge_over(&previous_transaction);
+                self.current = Some(current_change_set);
+                Ok(())
+            }
+            (Some(_), None) => Ok(()),
+            _ => Err(NestedTransactionError::NoTransactionsToCommit),
+        }
+    }
+
+    fn rollback_transaction(&mut self) -> Result<(), NestedTransactionError> {
+        if self.current.is_none() && self.transactions.len() == 0 {
+            return Err(NestedTransactionError::NoTransactionsToRollback);
+        }
+        self.current = self.transactions.pop();
+        Ok(())
+    }
+
+    fn start_transaction(&mut self) {
+        if let Some(t) = self.current.take() {
+            self.transactions.push(t);
+        }
+        self.current = Some(Changeset::new());
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CommitError {
+    TransactionsVectorNotEmpty,
 }
 
 // TLT - Transactional Lazy Trie
-pub struct TLT<S, T, H>
+pub struct TLT<'a, H>
 where
-    S: Storage,
-    T: Transactions,
     H: Hasher,
 {
-    pub storage: S,
-    pub nested_transactions: T,
+    pub nested_transactions: NestedTransaction,
+    pub trie: &'a mut Trie<H>,
+}
 
-    pub trie: Trie<H>,
+#[derive(Debug, PartialEq)]
+pub enum TLTError {}
+
+pub type TLTResult<T> = std::result::Result<T, TLTError>;
+
+impl<'a, H> TLT<'a, H>
+where
+    H: Hasher,
+{
+    pub fn new(trie: &'a mut Trie<H>) -> Self {
+        TLT {
+            trie,
+            nested_transactions: NestedTransaction::new(),
+        }
+    }
+
+    fn commit(&self, v: TrieStorageValueThreshold) -> Result<(), CommitError> {
+        if self.nested_transactions.transactions.len() > 0 {
+            return Err(CommitError::TransactionsVectorNotEmpty);
+        }
+
+        Ok(())
+    }
+
+    fn get(&self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
+        Ok(Some(vec![]))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::NestedTransaction;
+
+    fn test_nested_transaction() {
+        let mut nt = NestedTransaction::new();
+        nt.start_transaction();
+    }
 }

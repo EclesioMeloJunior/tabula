@@ -1,12 +1,15 @@
+pub mod changeset;
 pub mod codec;
 pub mod key;
 pub mod recorder;
 pub mod tlt;
+pub mod traits;
 
 use std::vec::IntoIter;
 
 use self::codec::EncodedIter;
 use self::recorder::{InMemoryRecorder, Recorder, RecorderError};
+use self::traits::Storage;
 use crate::crypto::hasher::Hasher;
 use key::Key;
 use parity_scale_codec::Encode;
@@ -263,6 +266,33 @@ pub enum TrieError {
     StorageValueNotFound,
 }
 
+impl<H: Hasher> Storage for Trie<H> {
+    type Key = Key;
+    type Value = StorageValue;
+    type Error = TrieError;
+
+    fn get(&self, key: &Self::Key) -> Self::StorageResult<Option<&Self::Value>> {
+        unimplemented!()
+    }
+
+    fn insert(&mut self, key: Self::Key, value: Self::Value) -> Self::StorageResult<()> {
+        let root: Node<H> = match self.root.take() {
+            Some(ref mut node) => self.insert_recursively(node, key, value)?,
+            None => Some(Element::Leaf(Leaf {
+                partial_key: key,
+                storage_value: VersionedStorageValue::RawStorageValue(value),
+            })),
+        };
+
+        self.root = root;
+        Ok(())
+    }
+
+    fn remove(&mut self, key: &Self::Key) -> Self::StorageResult<Option<Self::Value>> {
+        unimplemented!()
+    }
+}
+
 impl<H: Hasher> Trie<H> {
     pub fn new() -> Self {
         Trie::<H> {
@@ -331,19 +361,6 @@ impl<H: Hasher> Trie<H> {
                 }
             }
         }
-    }
-
-    pub fn insert(&mut self, key: Key, value: StorageValue) -> Result<(), TrieError> {
-        let root: Node<H> = match self.root.take() {
-            Some(ref mut node) => self.insert_recursively(node, key, value)?,
-            None => Some(Element::Leaf(Leaf {
-                partial_key: key,
-                storage_value: VersionedStorageValue::RawStorageValue(value),
-            })),
-        };
-
-        self.root = root;
-        Ok(())
     }
 
     fn insert_recursively(

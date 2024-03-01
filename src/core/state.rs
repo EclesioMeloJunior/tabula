@@ -1,6 +1,6 @@
 use crate::config::genesis::Genesis;
 use crate::crypto::hasher::Blake256Hasher;
-use crate::trie::{key::Key, Trie};
+use crate::trie::{key::Key, traits::Storage, Trie};
 use hex;
 
 pub struct State {

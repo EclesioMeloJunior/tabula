@@ -9,7 +9,7 @@ mod trie;
 
 use config::parser::{ConfigTOMLParser, RawChainSpecJSONParser};
 use std::error::Error;
-use trie::{key::Key, Trie, V0};
+use trie::{key::Key, traits::Storage, Trie, V0};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     core::start_client_from_genesis(server_settings, chainspec.clone());
 
     let mut t = Trie::<crypto::hasher::Blake256Hasher>::new();
+
     for (k, v) in &chainspec.genesis.raw.top {
         let key = hex::decode(k.strip_prefix("0x").unwrap())?;
         let key = Key::new(&key);
