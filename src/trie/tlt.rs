@@ -1,4 +1,6 @@
-use super::{key::Key, traits::Storage, Trie, TrieError, TrieStorageValueThreshold};
+use super::{
+    key::Key, recorder::Recorder, traits::Storage, Trie, TrieError, TrieStorageValueThreshold,
+};
 use crate::crypto::hasher::Hasher;
 
 use super::changeset::Changeset;
@@ -115,7 +117,12 @@ where
             }
         }
 
-        {}
+        {
+            // the trie might be incomplete due to the lazyness
+            // then we should use the recorder + encoded nodes
+            // to decode the path and find the value
+            self.trie.
+        };
 
         Ok(Some(vec![]))
     }

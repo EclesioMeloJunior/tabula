@@ -5,6 +5,7 @@ pub mod recorder;
 pub mod tlt;
 pub mod traits;
 
+use std::default;
 use std::vec::IntoIter;
 
 use self::codec::EncodedIter;
@@ -110,10 +111,22 @@ impl<H: Hasher> Leaf<H> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum NodeKind<H: Hasher> {
+    Raw(Node<H>),
+    Ref(H::Out),
+}
+
+impl<H: Hasher> Default for NodeKind<H> {
+    fn default() -> Self {
+        NodeKind::Raw(None)
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Branch<H: Hasher> {
     partial_key: Key,
     storage_value: VersionedStorageValue<H>,
-    children: [Node<H>; 16],
+    children: [NodeKind<H>; 16],
 }
 
 impl<H: Hasher> Branch<H> {
@@ -148,7 +161,12 @@ impl<H: Hasher> Branch<H> {
         let one: u16 = 1;
 
         for (idx, child) in (&self.children).into_iter().enumerate() {
-            if child.is_some() {
+            let exists = match child {
+                NodeKind::Raw(v) => v.is_some(),
+                _ => true,
+            };
+
+            if exists {
                 bitmap |= one << idx;
             }
         }
@@ -228,8 +246,9 @@ impl<H: Hasher> Element<H> {
                 }
 
                 for idx in 0..branch.children.len() {
-                    if let Some(child) = &branch.children[idx] {
-                        match child.encode(version, recorder) {
+                    match &branch.children[idx] {
+                        NodeKind::Raw(None) => {}
+                        NodeKind::Raw(Some(child)) => match child.encode(version, recorder) {
                             Err(err) => return Err(err),
                             Ok(encoded_child) if encoded_child.len() < 32 => {
                                 encoded.extend(encoded_child.encode());
@@ -242,8 +261,11 @@ impl<H: Hasher> Element<H> {
                                 }
                                 encoded.extend(hashed.encode());
                             }
+                        },
+                        NodeKind::Ref(ref_child) => {
+                            encoded.extend(ref_child.encode());
                         }
-                    }
+                    };
                 }
 
                 Ok(encoded)
@@ -271,6 +293,8 @@ impl<H: Hasher> Storage for Trie<H> {
     type Value = Vec<u8>;
     type Error = TrieError;
 
+    // TODO: get should have acess to the storage/recorder to retrive a storage value that is
+    // hased under the trie node
     fn get(&self, key: &Self::Key) -> Self::StorageResult<Option<&Self::Value>> {
         match self.root.clone() {
             Some(element) => match self.get_recursively(element, key) {
@@ -283,10 +307,10 @@ impl<H: Hasher> Storage for Trie<H> {
 
     fn insert(&mut self, key: Self::Key, value: Self::Value) -> Self::StorageResult<()> {
         let root: Node<H> = match self.root.take() {
-            Some(ref mut node) => self.insert_recursively(node, key, value)?,
+            Some(ref mut node) => self.insert_recursively(node, key, Some(value))?,
             None => Some(Element::Leaf(Leaf {
                 partial_key: key,
-                storage_value: VersionedStorageValue::RawStorageValue(value),
+                storage_value: VersionedStorageValue::RawStorageValue(Some(value)),
             })),
         };
 
@@ -328,6 +352,8 @@ impl<H: Hasher> Trie<H> {
             None => Ok(EncodedIter::new(vec![0b00000000].into_iter())),
         }
     }
+
+    fn decode_while_getting(&mut self) {}
 
     fn get_recursively(&self, element: Element<H>, key: &Key) -> Result<StorageValue, TrieError> {
         match element {
