@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::traits::Storage;
+use super::{traits::Storage, NodeRecorder};
 
 trait RemoveIf<T> {
     fn remove_if<F>(&mut self, predicate: F)
@@ -65,7 +65,7 @@ impl Storage for Changeset {
     type Value = Vec<u8>;
     type Error = ();
 
-    fn get(&self, key: &Self::Key) -> Self::StorageResult<Option<&Self::Value>> {
+    fn get(&self, key: &Self::Key, _: &NodeRecorder) -> Self::StorageResult<Option<&Self::Value>> {
         unimplemented!()
     }
 

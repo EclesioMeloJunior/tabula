@@ -1,4 +1,4 @@
-use std::{iter, mem};
+use std::mem;
 
 use super::*;
 use parity_scale_codec::{Decode, Input};
@@ -6,7 +6,7 @@ use parity_scale_codec::{Decode, Input};
 pub type CodecError = parity_scale_codec::Error;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum NodeKind {
+pub enum NodeHeaderKind {
     Leaf,
     LeafWithHashed,
     Branch,
@@ -71,13 +71,13 @@ impl Input for EncodedIter {
     }
 }
 
-fn decode_header(header_byte: u8) -> (NodeKind, u8) {
+fn decode_header(header_byte: u8) -> (NodeHeaderKind, u8) {
     match header_byte & 0b11110000 {
-        0b01000000 => (NodeKind::Leaf, 0b00111111),
-        0b10000000 => (NodeKind::Branch, 0b00111111),
-        0b11000000 => (NodeKind::BranchWithValue, 0b00111111),
-        0b00100000 => (NodeKind::LeafWithHashed, 0b00011111),
-        0b00010000 => (NodeKind::BranchWithHashed, 0b00001111),
+        0b01000000 => (NodeHeaderKind::Leaf, 0b00111111),
+        0b10000000 => (NodeHeaderKind::Branch, 0b00111111),
+        0b11000000 => (NodeHeaderKind::BranchWithValue, 0b00111111),
+        0b00100000 => (NodeHeaderKind::LeafWithHashed, 0b00011111),
+        0b00010000 => (NodeHeaderKind::BranchWithHashed, 0b00001111),
         _ => unreachable!(),
     }
 }
@@ -99,7 +99,7 @@ fn decode_partial_key_length(encoded: &mut EncodedIter, header: u8, pk_len_mask:
 
 fn decode_element<H>(
     encoded: &mut EncodedIter,
-    node_kind: NodeKind,
+    node_kind: NodeHeaderKind,
     pk_len: u32,
     recorder: &NodeRecorder,
 ) -> Result<Element<H>, DecodeError>
@@ -116,7 +116,7 @@ where
     }
 
     match node_kind {
-        NodeKind::Leaf => {
+        NodeHeaderKind::Leaf => {
             let decoded = Vec::<u8>::decode(encoded).unwrap();
             let storage_value = if decoded.len() > 0 {
                 VersionedStorageValue::RawStorageValue(Some(decoded))
@@ -131,7 +131,7 @@ where
 
             Ok(Element::Leaf(leaf))
         }
-        NodeKind::LeafWithHashed => {
+        NodeHeaderKind::LeafWithHashed => {
             let mut hashed_value: [u8; 32] = Default::default();
             let hashed_value = match encoded.read(&mut hashed_value) {
                 Err(_) => return Err(DecodeError::ExpectedHashedFoundEmpty),
@@ -168,12 +168,12 @@ where
             }
 
             let storage_value = match node_kind {
-                NodeKind::Branch => VersionedStorageValue::RawStorageValue(None),
-                NodeKind::BranchWithValue => {
+                NodeHeaderKind::Branch => VersionedStorageValue::RawStorageValue(None),
+                NodeHeaderKind::BranchWithValue => {
                     let decoded = Vec::<u8>::decode(encoded).unwrap();
                     VersionedStorageValue::RawStorageValue(Some(decoded))
                 }
-                NodeKind::BranchWithHashed => {
+                NodeHeaderKind::BranchWithHashed => {
                     let mut hashed_value: [u8; 32] = Default::default();
                     let hashed_value = match encoded.read(&mut hashed_value) {
                         Err(_) => return Err(DecodeError::ExpectedHashedFoundEmpty),
@@ -184,7 +184,7 @@ where
                 _ => unreachable!("should only handle branch kinds"),
             };
 
-            let mut children: [Option<Element<H>>; 16] = Default::default();
+            let mut children: [NodeKind<H>; 16] = Default::default();
             for idx in (0..).take(16) {
                 if !has_child_at[idx] {
                     continue;
@@ -236,5 +236,16 @@ where
         return Ok(Some(node));
     }
 
+    Ok(None)
+}
+
+pub fn get_while_decode_node<H>(
+    encoded: &mut EncodedIter,
+    recorder: &NodeRecorder,
+    key: &Key,
+) -> Result<Option<Element<H>>, DecodeError>
+where
+    H: Hasher,
+{
     Ok(None)
 }

@@ -4,11 +4,9 @@ pub mod key;
 pub mod recorder;
 pub mod tlt;
 pub mod traits;
-
-use std::default;
 use std::vec::IntoIter;
 
-use self::codec::EncodedIter;
+use self::codec::{decode_node, EncodedIter};
 use self::recorder::{InMemoryRecorder, Recorder, RecorderError};
 use self::traits::Storage;
 use crate::crypto::hasher::Hasher;
@@ -295,9 +293,13 @@ impl<H: Hasher> Storage for Trie<H> {
 
     // TODO: get should have acess to the storage/recorder to retrive a storage value that is
     // hased under the trie node
-    fn get(&self, key: &Self::Key) -> Self::StorageResult<Option<&Self::Value>> {
+    fn get(
+        &self,
+        key: &Self::Key,
+        recorder: &NodeRecorder,
+    ) -> Self::StorageResult<Option<&Self::Value>> {
         match self.root.clone() {
-            Some(element) => match self.get_recursively(element, key) {
+            Some(element) => match self.get_recursively(element, key, recorder) {
                 Ok(r) => Ok(r.as_ref()),
                 Err(err) => Err(err),
             },
@@ -355,7 +357,12 @@ impl<H: Hasher> Trie<H> {
 
     fn decode_while_getting(&mut self) {}
 
-    fn get_recursively(&self, element: Element<H>, key: &Key) -> Result<StorageValue, TrieError> {
+    fn get_recursively(
+        &self,
+        element: Element<H>,
+        key: &Key,
+        recorder: &NodeRecorder,
+    ) -> Result<StorageValue, TrieError> {
         match element {
             Element::Leaf(leaf) => {
                 if !leaf.partial_key.eq(key) {
@@ -364,7 +371,12 @@ impl<H: Hasher> Trie<H> {
 
                 match leaf.storage_value {
                     VersionedStorageValue::RawStorageValue(value) => Ok(value.clone()),
-                    VersionedStorageValue::HashedStorageValue(hashed_value) => {}
+                    VersionedStorageValue::HashedStorageValue(hashed_value) => {
+                        match recorder.get(&hashed_value.into()) {
+                            Ok(value) => Ok(value.cloned()),
+                            Err(_) => Err(TrieError::StorageValueNotFound),
+                        }
+                    }
                 }
             }
             Element::Branch(branch) => {
@@ -375,8 +387,17 @@ impl<H: Hasher> Trie<H> {
 
                     let child = branch.children[child_index as usize].clone();
                     return match child {
-                        Some(element) => self.get_recursively(element, &key_rest),
-                        _ => Err(TrieError::StorageValueNotFound),
+                        NodeKind::Raw(None) => Err(TrieError::StorageValueNotFound),
+                        NodeKind::Raw(Some(element)) => {
+                            self.get_recursively(element, &key_rest, recorder)
+                        }
+                        NodeKind::Ref(child_ref) => {
+                            let child_ref_vec: Vec<u8> = child_ref.into();
+                            if child_ref_vec.len() < 32 {
+                                let encoded_iter = EncodedIter::new(child_ref_vec.into_iter());
+                                decode_node(encoded, recorder)
+                            }
+                        }
                     };
                 }
 

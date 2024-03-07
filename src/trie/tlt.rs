@@ -1,5 +1,8 @@
 use super::{
-    key::Key, recorder::Recorder, traits::Storage, Trie, TrieError, TrieStorageValueThreshold,
+    key::Key,
+    recorder::{InMemoryRecorder, Recorder},
+    traits::Storage,
+    Trie, TrieError, TrieStorageValueThreshold,
 };
 use crate::crypto::hasher::Hasher;
 
@@ -64,6 +67,7 @@ where
 {
     pub nested_transactions: NestedTransaction,
     pub trie: &'a mut Trie<H>,
+    pub recorder: InMemoryRecorder<Vec<u8>, Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -82,6 +86,7 @@ where
         TLT {
             trie,
             nested_transactions: NestedTransaction::new(),
+            recorder: InMemoryRecorder::new(),
         }
     }
 
@@ -96,7 +101,7 @@ where
     fn get(&self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
         {
             if let Some(current) = &self.nested_transactions.current {
-                match current.get(&key) {
+                match current.get(&key, &self.recorder) {
                     Err(_) => return Err(TLTError::FailToGetFromNestedTransaction),
                     Ok(r) => match r {
                         Some(value) => return Ok(Some(value.clone())),
@@ -108,7 +113,7 @@ where
 
         {
             let nibble_encoded_key = Key::new(&key);
-            match self.trie.get(&nibble_encoded_key) {
+            match self.trie.get(&nibble_encoded_key, &self.recorder) {
                 Err(err) => return Err(TLTError::FailToGetFromTrie(err)),
                 Ok(r) => match r {
                     Some(value) => return Ok(Some(value.clone())),
@@ -121,7 +126,7 @@ where
             // the trie might be incomplete due to the lazyness
             // then we should use the recorder + encoded nodes
             // to decode the path and find the value
-            self.trie.
+            // self.trie.
         };
 
         Ok(Some(vec![]))
