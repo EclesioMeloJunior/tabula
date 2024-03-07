@@ -111,7 +111,7 @@ impl<H: Hasher> Leaf<H> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum NodeKind<H: Hasher> {
     Raw(Node<H>),
-    Ref(H::Out),
+    Ref(Vec<u8>),
 }
 
 impl<H: Hasher> Default for NodeKind<H> {
@@ -284,6 +284,7 @@ pub enum TrieError {
     InsertionFailed,
     CannotGetChildIndex,
     StorageValueNotFound,
+    FailedToDecodeNode(codec::DecodeError),
 }
 
 impl<H: Hasher> Storage for Trie<H> {
@@ -294,17 +295,27 @@ impl<H: Hasher> Storage for Trie<H> {
     // TODO: get should have acess to the storage/recorder to retrive a storage value that is
     // hased under the trie node
     fn get(
-        &self,
+        &mut self,
         key: &Self::Key,
         recorder: &NodeRecorder,
     ) -> Self::StorageResult<Option<&Self::Value>> {
-        match self.root.clone() {
-            Some(element) => match self.get_recursively(element, key, recorder) {
+        let (root, value) = match self.root.take() {
+            Some(ref mut node) => match self.get_recursively(node, key, recorder) {
                 Ok(r) => Ok(r.as_ref()),
                 Err(err) => Err(err),
             },
-            None => Ok(None),
-        }
+        };
+
+        self.root = root;
+        Ok(value)
+
+        // match self.root.clone() {
+        //     Some(element) => match self.get_recursively(element, key, recorder) {
+        //         Ok(r) => Ok(r.as_ref()),
+        //         Err(err) => Err(err),
+        //     },
+        //     None => Ok(None),
+        // }
     }
 
     fn insert(&mut self, key: Self::Key, value: Self::Value) -> Self::StorageResult<()> {
@@ -355,14 +366,12 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    fn decode_while_getting(&mut self) {}
-
     fn get_recursively(
-        &self,
-        element: Element<H>,
+        &mut self,
+        element: &mut Element<H>,
         key: &Key,
         recorder: &NodeRecorder,
-    ) -> Result<StorageValue, TrieError> {
+    ) -> Result<(Node<H>, StorageValue), TrieError> {
         match element {
             Element::Leaf(leaf) => {
                 if !leaf.partial_key.eq(key) {
@@ -385,17 +394,29 @@ impl<H: Hasher> Trie<H> {
                     let (child_index, key_rest) =
                         split_child_index_from_key(&key, common_prefix_key)?;
 
-                    let child = branch.children[child_index as usize].clone();
+                    let mut child = branch.children[child_index as usize].clone();
                     return match child {
                         NodeKind::Raw(None) => Err(TrieError::StorageValueNotFound),
-                        NodeKind::Raw(Some(element)) => {
+                        NodeKind::Raw(Some(ref mut element)) => {
                             self.get_recursively(element, &key_rest, recorder)
                         }
                         NodeKind::Ref(child_ref) => {
-                            let child_ref_vec: Vec<u8> = child_ref.into();
-                            if child_ref_vec.len() < 32 {
-                                let encoded_iter = EncodedIter::new(child_ref_vec.into_iter());
-                                decode_node(encoded, recorder)
+                            if child_ref.len() < 32 {
+                                let mut encoded_iter = EncodedIter::new(child_ref.into_iter());
+                                let mut node = decode_node::<H>(&mut encoded_iter, recorder);
+                                match node {
+                                    Err(err) => Err(TrieError::FailedToDecodeNode(err)),
+                                    Ok(None) => Err(TrieError::StorageValueNotFound),
+                                    Ok(Some(ref mut element)) => {
+                                        branch.children[child_index as usize] =
+                                            NodeKind::Raw(Some(element.clone()));
+
+                                        self.get_recursively(element, key, recorder)
+                                    }
+                                }
+                            } else {
+                                // retrieve the encoded node from the node ref
+                                Err(TrieError::StorageValueNotFound)
                             }
                         }
                     };
@@ -1106,7 +1127,7 @@ mod tests {
         }
 
         for (k, expected) in keys {
-            let sv = t.get(&k).unwrap();
+            let sv = t.get(&k, &InMemoryRecorder::new()).unwrap();
             assert_eq!(expected, sv);
         }
 

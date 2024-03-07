@@ -135,10 +135,23 @@ where
 
 #[cfg(test)]
 mod test {
+    use crate::{
+        crypto::hasher::Blake256Hasher,
+        trie::{key::Key, traits::Storage, Trie},
+    };
+
     use super::NestedTransaction;
 
-    fn test_nested_transaction() {
+    fn test_get_value_that_is_on_ref_node() {
+        let mut trie = Trie::<Blake256Hasher>::new();
+
+        let key = &[0x01, 0x02, 0x03];
+        let encoded_key = Key::new(key);
+
+        let value = vec![1, 2, 3, 44, 55];
+
+        trie.insert(encoded_key, value.clone()).unwrap();
+
         let mut nt = NestedTransaction::new();
-        nt.start_transaction();
     }
 }
