@@ -1,7 +1,9 @@
 use std::{collections::HashMap, hash::Hash};
 
 #[derive(Debug, PartialEq)]
-pub enum RecorderError {}
+pub enum RecorderError {
+    NotFound,
+}
 
 pub trait Recorder {
     type Key = Vec<u8>;

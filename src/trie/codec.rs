@@ -179,6 +179,8 @@ where
                         Err(_) => return Err(DecodeError::ExpectedHashedFoundEmpty),
                         Ok(()) => H::Out::try_from(hashed_value.to_vec()).unwrap(),
                     };
+
+                    println!("is a hashed storage value while decoding node");
                     VersionedStorageValue::HashedStorageValue(hashed_value)
                 }
                 _ => unreachable!("should only handle branch kinds"),

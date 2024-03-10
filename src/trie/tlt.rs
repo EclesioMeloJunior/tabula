@@ -117,17 +117,12 @@ where
                 Err(err) => return Err(TLTError::FailToGetFromTrie(err)),
                 Ok(r) => match r {
                     Some(value) => return Ok(Some(value.clone())),
-                    _ => {}
+                    _ => {
+                        println!("here!")
+                    }
                 },
             }
         }
-
-        {
-            // the trie might be incomplete due to the lazyness
-            // then we should use the recorder + encoded nodes
-            // to decode the path and find the value
-            // self.trie.
-        };
 
         Ok(Some(vec![]))
     }
@@ -137,21 +132,43 @@ where
 mod test {
     use crate::{
         crypto::hasher::Blake256Hasher,
-        trie::{key::Key, traits::Storage, Trie},
+        trie::{
+            codec::decode_node, key::Key, recorder::InMemoryRecorder, traits::Storage, Trie, V1,
+        },
     };
+    use hex_literal::hex;
 
-    use super::NestedTransaction;
+    use super::TLT;
 
+    #[test]
     fn test_get_value_that_is_on_ref_node() {
-        let mut trie = Trie::<Blake256Hasher>::new();
+        let mut in_mem_recorder = InMemoryRecorder::new();
+        let mut decoded_trie: Trie<Blake256Hasher>;
 
-        let key = &[0x01, 0x02, 0x03];
-        let encoded_key = Key::new(key);
+        let mut tlt = {
+            let mut trie = Trie::<Blake256Hasher>::new();
+            trie.insert(Key::new(&hex!("aabb")), Some(vec![0; 40]))
+                .unwrap();
 
-        let value = vec![1, 2, 3, 44, 55];
+            trie.insert(Key::new(&hex!("aa22")), Some(vec![0; 39]))
+                .unwrap();
 
-        trie.insert(encoded_key, Some(value.clone())).unwrap();
+            trie.insert(Key::new(&hex!("a128")), Some(vec![0; 38]))
+                .unwrap();
 
-        let mut nt = NestedTransaction::new();
+            let mut encoded_iter = trie.encode_trie_root(V1, &mut in_mem_recorder).unwrap();
+            let decoded_root =
+                decode_node::<Blake256Hasher>(&mut encoded_iter, &mut in_mem_recorder).unwrap();
+
+            decoded_trie = Trie::<Blake256Hasher> { root: decoded_root };
+            TLT::new(&mut decoded_trie)
+        };
+
+        tlt.recorder = in_mem_recorder;
+
+        // trying to get the value for the key &hex!("aabb")
+        let expected_value = Some(vec![0; 40]);
+        let result = tlt.get(hex!("aabb").to_vec()).unwrap();
+        assert_eq!(expected_value, result)
     }
 }

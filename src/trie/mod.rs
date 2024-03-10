@@ -11,6 +11,7 @@ use self::codec::{decode_node, EncodedIter};
 use self::recorder::{InMemoryRecorder, Recorder, RecorderError};
 use self::traits::Storage;
 use crate::crypto::hasher::Hasher;
+use hex::decode;
 use key::Key;
 use parity_scale_codec::Encode;
 
@@ -220,10 +221,21 @@ impl<H: Hasher> Element<H> {
             Element::Leaf(leaf) => {
                 let header = leaf.encoded_header(version);
                 let key: Vec<u8> = leaf.partial_key.clone().into();
-                let storage_value = leaf.storage_value.encode(version);
+                let encoded_storage_value = leaf.storage_value.encode(version);
 
-                if let Some(storage_value) = storage_value {
-                    return Ok(vec![header, key, storage_value].concat());
+                if let Some(encoded_storage_value) = encoded_storage_value {
+                    if version == V1 {
+                        match &leaf.storage_value {
+                            VersionedStorageValue::RawStorageValue(raw) => match raw {
+                                Some(storage_value) if storage_value.len() > 32 => recorder
+                                    .insert(&encoded_storage_value, storage_value.clone())?,
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+
+                    return Ok(vec![header, key, encoded_storage_value].concat());
                 }
 
                 Ok(vec![header, key].concat())
@@ -240,8 +252,19 @@ impl<H: Hasher> Element<H> {
                 let children_bitmap = branch.children_bitmap();
                 encoded.extend(children_bitmap.to_vec());
 
-                if let Some(storage_value) = branch.storage_value.encode(version) {
-                    encoded.extend(storage_value);
+                if let Some(encoded_storage_value) = branch.storage_value.encode(version) {
+                    if version == V1 {
+                        match &branch.storage_value {
+                            VersionedStorageValue::RawStorageValue(raw) => match raw {
+                                Some(storage_value) if storage_value.len() > 32 => recorder
+                                    .insert(&encoded_storage_value, storage_value.clone())?,
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+
+                    encoded.extend(encoded_storage_value);
                 }
 
                 for idx in 0..branch.children.len() {
@@ -282,6 +305,7 @@ pub struct Trie<H: Hasher> {
 
 #[derive(Debug, PartialEq)]
 pub enum TrieError {
+    NodeNotRecorded(RecorderError),
     InsertionFailed,
     CannotGetChildIndex,
     StorageValueNotFound,
@@ -374,7 +398,7 @@ impl<H: Hasher> Trie<H> {
                     VersionedStorageValue::HashedStorageValue(hashed_value) => {
                         match recorder.get(&hashed_value.clone().into()) {
                             Ok(value) => Ok(value.cloned()),
-                            Err(_) => Err(TrieError::StorageValueNotFound),
+                            Err(err) => Err(TrieError::NodeNotRecorded(err)),
                         }
                     }
                 }
@@ -385,6 +409,18 @@ impl<H: Hasher> Trie<H> {
                     let (child_index, key_rest) =
                         split_child_index_from_key(&key, common_prefix_key)?;
 
+                    let decode_child_and_find = |encoded_node: Vec<u8>, rest: Key| {
+                        let mut encoded_iter = EncodedIter::new(encoded_node.into_iter());
+                        let mut node = decode_node::<H>(&mut encoded_iter, recorder);
+                        match node {
+                            Err(err) => Err(TrieError::FailedToDecodeNode(err)),
+                            Ok(None) => Err(TrieError::StorageValueNotFound),
+                            Ok(Some(ref mut element)) => {
+                                self.get_recursively(element, &rest, recorder)
+                            }
+                        }
+                    };
+
                     let mut child = branch.children[child_index as usize].clone();
                     return match child {
                         NodeKind::Raw(None) => Err(TrieError::StorageValueNotFound),
@@ -393,18 +429,17 @@ impl<H: Hasher> Trie<H> {
                         }
                         NodeKind::Ref(child_ref) => {
                             if child_ref.len() < 32 {
-                                let mut encoded_iter = EncodedIter::new(child_ref.into_iter());
-                                let mut node = decode_node::<H>(&mut encoded_iter, recorder);
-                                match node {
-                                    Err(err) => Err(TrieError::FailedToDecodeNode(err)),
-                                    Ok(None) => Err(TrieError::StorageValueNotFound),
-                                    Ok(Some(ref mut element)) => {
-                                        self.get_recursively(element, key, recorder)
-                                    }
-                                }
+                                decode_child_and_find(child_ref, key_rest)
                             } else {
-                                // retrieve the encoded node from the node ref
-                                Err(TrieError::StorageValueNotFound)
+                                match recorder.get(&child_ref) {
+                                    Ok(None) => {
+                                        Err(TrieError::NodeNotRecorded(RecorderError::NotFound))
+                                    }
+                                    Ok(Some(encoded_node)) => {
+                                        decode_child_and_find(encoded_node.clone(), key_rest)
+                                    }
+                                    Err(err) => Err(TrieError::NodeNotRecorded(err)),
+                                }
                             }
                         }
                     };
