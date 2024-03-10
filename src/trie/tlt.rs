@@ -98,9 +98,9 @@ where
         Ok(())
     }
 
-    fn get(&self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
+    fn get(&mut self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
         {
-            if let Some(current) = &self.nested_transactions.current {
+            if let Some(ref mut current) = self.nested_transactions.current {
                 match current.get(&key, &self.recorder) {
                     Err(_) => return Err(TLTError::FailToGetFromNestedTransaction),
                     Ok(r) => match r {
@@ -150,7 +150,7 @@ mod test {
 
         let value = vec![1, 2, 3, 44, 55];
 
-        trie.insert(encoded_key, value.clone()).unwrap();
+        trie.insert(encoded_key, Some(value.clone())).unwrap();
 
         let mut nt = NestedTransaction::new();
     }

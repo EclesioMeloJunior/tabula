@@ -4,6 +4,7 @@ pub mod key;
 pub mod recorder;
 pub mod tlt;
 pub mod traits;
+use std::hash;
 use std::vec::IntoIter;
 
 use self::codec::{decode_node, EncodedIter};
@@ -298,32 +299,22 @@ impl<H: Hasher> Storage for Trie<H> {
         &mut self,
         key: &Self::Key,
         recorder: &NodeRecorder,
-    ) -> Self::StorageResult<Option<&Self::Value>> {
-        let (root, value) = match self.root.take() {
-            Some(ref mut node) => match self.get_recursively(node, key, recorder) {
-                Ok(r) => Ok(r.as_ref()),
-                Err(err) => Err(err),
+    ) -> Self::StorageResult<Option<Self::Value>> {
+        match self.root {
+            Some(ref node) => match self.get_recursively(node, key, recorder) {
+                Ok(storage_value) => Ok(storage_value),
+                Err(err) => return Err(err),
             },
-        };
-
-        self.root = root;
-        Ok(value)
-
-        // match self.root.clone() {
-        //     Some(element) => match self.get_recursively(element, key, recorder) {
-        //         Ok(r) => Ok(r.as_ref()),
-        //         Err(err) => Err(err),
-        //     },
-        //     None => Ok(None),
-        // }
+            None => Ok(None),
+        }
     }
 
-    fn insert(&mut self, key: Self::Key, value: Self::Value) -> Self::StorageResult<()> {
+    fn insert(&mut self, key: Self::Key, value: Option<Self::Value>) -> Self::StorageResult<()> {
         let root: Node<H> = match self.root.take() {
-            Some(ref mut node) => self.insert_recursively(node, key, Some(value))?,
+            Some(ref mut node) => self.insert_recursively(node, key, value)?,
             None => Some(Element::Leaf(Leaf {
                 partial_key: key,
-                storage_value: VersionedStorageValue::RawStorageValue(Some(value)),
+                storage_value: VersionedStorageValue::RawStorageValue(value),
             })),
         };
 
@@ -367,21 +358,21 @@ impl<H: Hasher> Trie<H> {
     }
 
     fn get_recursively(
-        &mut self,
-        element: &mut Element<H>,
+        &self,
+        element: &Element<H>,
         key: &Key,
         recorder: &NodeRecorder,
-    ) -> Result<(Node<H>, StorageValue), TrieError> {
+    ) -> Result<StorageValue, TrieError> {
         match element {
             Element::Leaf(leaf) => {
                 if !leaf.partial_key.eq(key) {
                     return Err(TrieError::StorageValueNotFound);
                 }
 
-                match leaf.storage_value {
+                match &leaf.storage_value {
                     VersionedStorageValue::RawStorageValue(value) => Ok(value.clone()),
                     VersionedStorageValue::HashedStorageValue(hashed_value) => {
-                        match recorder.get(&hashed_value.into()) {
+                        match recorder.get(&hashed_value.clone().into()) {
                             Ok(value) => Ok(value.cloned()),
                             Err(_) => Err(TrieError::StorageValueNotFound),
                         }
@@ -408,9 +399,6 @@ impl<H: Hasher> Trie<H> {
                                     Err(err) => Err(TrieError::FailedToDecodeNode(err)),
                                     Ok(None) => Err(TrieError::StorageValueNotFound),
                                     Ok(Some(ref mut element)) => {
-                                        branch.children[child_index as usize] =
-                                            NodeKind::Raw(Some(element.clone()));
-
                                         self.get_recursively(element, key, recorder)
                                     }
                                 }
@@ -422,7 +410,7 @@ impl<H: Hasher> Trie<H> {
                     };
                 }
 
-                match branch.storage_value {
+                match &branch.storage_value {
                     VersionedStorageValue::RawStorageValue(value) => Ok(value.clone()),
                     VersionedStorageValue::HashedStorageValue(_) => unimplemented!(),
                 }
@@ -475,12 +463,13 @@ impl<H: Hasher> Trie<H> {
         if common_prefix_len == 0 {
             let mut branch_element = Branch::<H>::new_empty();
             let child_index = leaf_element.as_child(common_prefix_len)?;
-            branch_element.children[child_index] = Some(leaf_element.to_element());
+            branch_element.children[child_index] = NodeKind::Raw(Some(leaf_element.to_element()));
 
             let (child_index, key_rest) = split_child_index_from_key(&key, common_prefix_len)?;
             let new_leaf = Leaf::new(key_rest, VersionedStorageValue::RawStorageValue(value));
 
-            branch_element.children[child_index as usize] = Some(new_leaf.to_element());
+            branch_element.children[child_index as usize] =
+                NodeKind::Raw(Some(new_leaf.to_element()));
             return Ok(Some(branch_element.to_element()));
         }
 
@@ -489,14 +478,14 @@ impl<H: Hasher> Trie<H> {
             let child_index = new_leaf.as_child(common_prefix_len)?;
 
             let mut branch = leaf_element.as_branch();
-            branch.children[child_index] = Some(new_leaf.to_element());
+            branch.children[child_index] = NodeKind::Raw(Some(new_leaf.to_element()));
             return Ok(Some(branch.to_element()));
         }
 
         if common_prefix_len == key.0.len() {
             let child_index = leaf_element.as_child(common_prefix_len)?;
             let mut branch = Branch::<H>::new(key, VersionedStorageValue::RawStorageValue(value));
-            branch.children[child_index] = Some(leaf_element.to_element());
+            branch.children[child_index] = NodeKind::Raw(Some(leaf_element.to_element()));
             return Ok(Some(branch.to_element()));
         }
 
@@ -506,10 +495,10 @@ impl<H: Hasher> Trie<H> {
         let mut new_leaf = Leaf::<H>::new(key, VersionedStorageValue::RawStorageValue(value));
         let child_index = new_leaf.as_child(common_prefix_len)?;
 
-        branch.children[child_index] = Some(new_leaf.to_element());
+        branch.children[child_index] = NodeKind::Raw(Some(new_leaf.to_element()));
 
         let child_index = leaf_element.as_child(common_prefix_len)?;
-        branch.children[child_index] = Some(leaf_element.to_element());
+        branch.children[child_index] = NodeKind::Raw(Some(leaf_element.to_element()));
         Ok(Some(branch.to_element()))
     }
 
@@ -545,12 +534,12 @@ impl<H: Hasher> Trie<H> {
         if common_prefix_len == 0 && branch_element.partial_key.0.len() > 0 {
             let mut branch_empty = Branch::<H>::new_empty();
             let child_index = branch_element.as_child(common_prefix_len)?;
-            branch_empty.children[child_index] = Some(branch_element.to_element());
+            branch_empty.children[child_index] = NodeKind::Raw(Some(branch_element.to_element()));
 
             let mut new_leaf = Leaf::new(key, VersionedStorageValue::RawStorageValue(value));
             let child_index = new_leaf.as_child(common_prefix_len)?;
 
-            branch_empty.children[child_index] = Some(new_leaf.to_element());
+            branch_empty.children[child_index] = NodeKind::Raw(Some(new_leaf.to_element()));
             return Ok(Some(branch_empty.to_element()));
         }
 
@@ -558,11 +547,16 @@ impl<H: Hasher> Trie<H> {
             let (child_index, key_rest) = split_child_index_from_key(&key, 0)?;
             branch_element.children[child_index as usize] =
                 match branch_element.children[child_index as usize].clone() {
-                    Some(ref mut element) => self.insert_recursively(element, key_rest, value)?,
-                    None => Some(
+                    NodeKind::Raw(Some(ref mut element)) => {
+                        NodeKind::Raw(self.insert_recursively(element, key_rest, value)?)
+                    }
+                    NodeKind::Raw(None) => NodeKind::Raw(Some(
                         Leaf::new(key_rest, VersionedStorageValue::RawStorageValue(value))
                             .to_element(),
-                    ),
+                    )),
+                    NodeKind::Ref(_) => {
+                        unimplemented!("cannot insert on trie with node ref")
+                    }
                 };
 
             return Ok(Some(branch_element.to_element()));
@@ -572,11 +566,16 @@ impl<H: Hasher> Trie<H> {
             let (child_index, key_rest) = split_child_index_from_key(&key, common_prefix_len)?;
             branch_element.children[child_index as usize] =
                 match branch_element.children[child_index as usize].clone() {
-                    Some(ref mut element) => self.insert_recursively(element, key_rest, value)?,
-                    None => Some(
+                    NodeKind::Raw(Some(ref mut element)) => {
+                        NodeKind::Raw(self.insert_recursively(element, key_rest, value)?)
+                    }
+                    NodeKind::Raw(None) => NodeKind::Raw(Some(
                         Leaf::new(key_rest, VersionedStorageValue::RawStorageValue(value))
                             .to_element(),
-                    ),
+                    )),
+                    NodeKind::Ref(_) => {
+                        unimplemented!("cannot insert on trie with node ref")
+                    }
                 };
 
             return Ok(Some(branch_element.to_element()));
@@ -585,7 +584,7 @@ impl<H: Hasher> Trie<H> {
         if common_prefix_len == key.0.len() {
             let mut branch = Branch::<H>::new(key, VersionedStorageValue::RawStorageValue(value));
             let child_index = branch_element.as_child(common_prefix_len)?;
-            branch.children[child_index] = Some(branch_element.to_element());
+            branch.children[child_index] = NodeKind::Raw(Some(branch_element.to_element()));
             return Ok(Some(branch.to_element()));
         }
 
@@ -595,12 +594,13 @@ impl<H: Hasher> Trie<H> {
         );
 
         let (child_index, key_rest) = split_child_index_from_key(&key, common_prefix_len)?;
-        new_branch.children[child_index as usize] = Some(
+        new_branch.children[child_index as usize] = NodeKind::Raw(Some(
             Leaf::<H>::new(key_rest, VersionedStorageValue::RawStorageValue(value)).to_element(),
-        );
+        ));
 
         let child_index = branch_element.as_child(common_prefix_len)?;
-        new_branch.children[child_index as usize] = Some(branch_element.to_element());
+        new_branch.children[child_index as usize] =
+            NodeKind::Raw(Some(branch_element.to_element()));
         Ok(Some(new_branch.to_element()))
     }
 }
@@ -704,32 +704,32 @@ mod tests {
             root: Some(Element::Branch(Box::new(Branch {
                 partial_key: Key::from(vec![]),
                 children: [
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![1, 11, 11, 12, 12, 0, 13]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             5, 0, 0, 0, 1,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![10, 11, 11, 12, 12]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             0, 1, 2, 3, 4,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
                 storage_value: VersionedStorageValue::RawStorageValue(None),
             }))),
@@ -751,27 +751,27 @@ mod tests {
                 partial_key: Key(vec![10, 10, 11, 11]),
                 storage_value: VersionedStorageValue::RawStorageValue(Some(vec![0, 1, 2, 3, 4])),
                 children: [
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![12]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             5, 0, 0, 0, 1,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -792,27 +792,27 @@ mod tests {
                 partial_key: Key(vec![10, 10]),
                 storage_value: VersionedStorageValue::RawStorageValue(Some(vec![5, 0, 0, 0, 1])),
                 children: [
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![11]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             0, 1, 2, 3, 4,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -833,32 +833,32 @@ mod tests {
                 partial_key: Key(vec![10, 10]),
                 storage_value: VersionedStorageValue::RawStorageValue(None),
                 children: [
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![1]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             0, 1, 2, 3, 4,
                         ])),
-                    })),
-                    Some(Element::Leaf(Leaf {
+                    }))),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![2]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             5, 0, 0, 0, 1,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -881,58 +881,58 @@ mod tests {
                 partial_key: Key::from(vec![]),
                 storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
                 children: [
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![1, 3, 3]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             1, 1, 1, 1, 1,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(Element::Branch(Box::new(Branch {
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Branch(Box::new(Branch {
                         partial_key: Key(vec![10]),
                         storage_value: VersionedStorageValue::RawStorageValue(None),
                         children: [
-                            None,
-                            Some(Element::Leaf(Leaf {
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(Some(Element::Leaf(Leaf {
                                 partial_key: Key(vec![1]),
                                 storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                                     0, 1, 2, 3, 4,
                                 ])),
-                            })),
-                            Some(Element::Leaf(Leaf {
+                            }))),
+                            NodeKind::Raw(Some(Element::Leaf(Leaf {
                                 partial_key: Key(vec![2]),
                                 storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                                     5, 0, 0, 0, 1,
                                 ])),
-                            })),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
+                            }))),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
                         ],
-                    }))),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    })))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -957,60 +957,60 @@ mod tests {
                 partial_key: Key(vec![10, 10]),
                 storage_value: VersionedStorageValue::RawStorageValue(None),
                 children: [
-                    None,
-                    Some(Element::Leaf(Leaf {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![1]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             0, 1, 2, 3, 4,
                         ])),
-                    })),
-                    Some(Element::Branch(Box::new(Branch {
+                    }))),
+                    NodeKind::Raw(Some(Element::Branch(Box::new(Branch {
                         partial_key: Key(vec![2]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             5, 0, 0, 0, 1,
                         ])),
                         children: [
-                            None,
-                            Some(Element::Leaf(Leaf {
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(Some(Element::Leaf(Leaf {
                                 partial_key: Key(vec![1]),
                                 storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                                     4, 4, 0, 0, 1,
                                 ])),
-                            })),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
+                            }))),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
+                            NodeKind::Raw(None),
                         ],
-                    }))),
-                    Some(Element::Leaf(Leaf {
+                    })))),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![3]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![
                             1, 0, 0, 0, 1,
                         ])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -1035,26 +1035,26 @@ mod tests {
                 partial_key: Key::new(&[0x01]),
                 storage_value: VersionedStorageValue::RawStorageValue(Some(vec![1, 1])),
                 children: [
-                    Some(Element::Branch(Box::new(Branch {
+                    NodeKind::Raw(Some(Element::Branch(Box::new(Branch {
                         partial_key: Key(vec![2, 15, 15]),
                         storage_value: VersionedStorageValue::RawStorageValue(None),
                         children: Default::default(),
-                    }))),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    })))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -1080,29 +1080,29 @@ mod tests {
                 partial_key: Key(vec![0, 1, 0]),
                 storage_value: VersionedStorageValue::RawStorageValue(None),
                 children: [
-                    None,
-                    None,
-                    Some(Element::Branch(Box::new(Branch {
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(Some(Element::Branch(Box::new(Branch {
                         partial_key: Key(vec![15, 15]),
                         storage_value: VersionedStorageValue::RawStorageValue(None),
                         children: Default::default(),
-                    }))),
-                    Some(Element::Leaf(Leaf {
+                    })))),
+                    NodeKind::Raw(Some(Element::Leaf(Leaf {
                         partial_key: Key(vec![15, 15]),
                         storage_value: VersionedStorageValue::RawStorageValue(Some(vec![1, 1])),
-                    })),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    }))),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
+                    NodeKind::Raw(None),
                 ],
             }))),
         };
@@ -1131,7 +1131,7 @@ mod tests {
             assert_eq!(expected, sv);
         }
 
-        let not_found = t.get(&Key(vec![0, 0, 0, 0, 1]));
+        let not_found = t.get(&Key(vec![0, 0, 0, 0, 1]), &InMemoryRecorder::new());
         assert_eq!(not_found, Err(TrieError::StorageValueNotFound));
     }
 
@@ -1141,22 +1141,22 @@ mod tests {
             partial_key: Key(vec![0, 1, 0]),
             storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
             children: [
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
             ],
         };
 
@@ -1167,22 +1167,22 @@ mod tests {
             partial_key: Key(vec![0, 1, 0]),
             storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
             children: [
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
             ],
         };
 
@@ -1193,22 +1193,22 @@ mod tests {
             partial_key: Key(vec![0, 1, 0]),
             storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
             children: [
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                Some(Element::Leaf(Default::default())),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
             ],
         };
 
@@ -1219,24 +1219,24 @@ mod tests {
             partial_key: Key(vec![0, 1, 0]),
             storage_value: VersionedStorageValue::<Blake256Hasher>::RawStorageValue(None),
             children: [
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
                 //Some(Element::Leaf(Default::default())),
-                None,
-                None,
-                Some(Element::Leaf(Default::default())),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(Some(Element::Leaf(Default::default()))),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
+                NodeKind::Raw(None),
                 //Some(Element::Leaf(Default::default())),
-                None,
+                NodeKind::Raw(None),
             ],
         };
 

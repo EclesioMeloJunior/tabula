@@ -65,11 +65,15 @@ impl Storage for Changeset {
     type Value = Vec<u8>;
     type Error = ();
 
-    fn get(&self, key: &Self::Key, _: &NodeRecorder) -> Self::StorageResult<Option<&Self::Value>> {
+    fn get(
+        &mut self,
+        key: &Self::Key,
+        _: &NodeRecorder,
+    ) -> Self::StorageResult<Option<Self::Value>> {
         unimplemented!()
     }
 
-    fn insert(&mut self, key: Self::Key, value: Self::Value) -> Self::StorageResult<()> {
+    fn insert(&mut self, key: Self::Key, value: Option<Self::Value>) -> Self::StorageResult<()> {
         unimplemented!()
     }
 
