@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use super::{
     key::Key,
     recorder::{InMemoryRecorder, Recorder},
@@ -73,6 +75,8 @@ where
 #[derive(Debug, PartialEq)]
 pub enum TLTError {
     FailToGetFromNestedTransaction,
+    TransactionInsertFailed,
+    TrieInsertFailed(TrieError),
     FailToGetFromTrie(TrieError),
 }
 
@@ -90,12 +94,25 @@ where
         }
     }
 
-    fn commit(&self, v: TrieStorageValueThreshold) -> Result<(), CommitError> {
+    fn commit(&mut self, v: TrieStorageValueThreshold) -> Result<(), CommitError> {
         if self.nested_transactions.transactions.len() > 0 {
             return Err(CommitError::TransactionsVectorNotEmpty);
         }
 
         Ok(())
+    }
+
+    fn insert(&mut self, key: Vec<u8>, value: Option<Vec<u8>>) -> TLTResult<()> {
+        if let Some(ref mut current) = self.nested_transactions.current {
+            return current
+                .insert(key, value)
+                .map_err(|_| TLTError::TransactionInsertFailed);
+        };
+
+        let nibble_encoded_key = Key::new(&key);
+        self.trie
+            .insert(nibble_encoded_key, value)
+            .map_err(|err| TLTError::TrieInsertFailed(err))
     }
 
     fn get(&mut self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
@@ -141,7 +158,7 @@ mod test {
     use super::TLT;
 
     #[test]
-    fn test_get_value_that_is_on_ref_node() {
+    fn test_get_value_from_not_decoded_node() {
         let mut in_mem_recorder = InMemoryRecorder::new();
         let mut decoded_trie: Trie<Blake256Hasher>;
 
@@ -170,5 +187,22 @@ mod test {
         let expected_value = Some(vec![0; 40]);
         let result = tlt.get(hex!("aabb").to_vec()).unwrap();
         assert_eq!(expected_value, result)
+    }
+
+    #[test]
+    fn test_tlt_insert_on_current_transaction() {
+        let mut trie = Trie::<Blake256Hasher>::new();
+        let mut tlt = TLT::new(&mut trie);
+
+        assert!(tlt.nested_transactions.current.is_none());
+
+        tlt.nested_transactions.start_transaction();
+        tlt.insert(hex!("010023").to_vec(), Some(vec![1, 255]))
+            .unwrap();
+        tlt.insert(hex!("010024").to_vec(), Some(vec![255, 255]))
+            .unwrap();
+
+        assert!(tlt.nested_transactions.current.is_some());
+        assert!(trie.root.is_none());
     }
 }
