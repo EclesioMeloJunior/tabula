@@ -2,6 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::{traits::Storage, NodeRecorder};
 
+#[derive(Debug, PartialEq)]
+pub enum ChangesetError {
+    ItemDeleted,
+}
+
 trait RemoveIf<T> {
     fn remove_if<F>(&mut self, predicate: F)
     where
@@ -32,8 +37,8 @@ pub enum Change {
 }
 
 pub struct Changeset {
-    upserts: HashMap<Vec<u8>, Vec<u8>>,
-    deletes: HashSet<Vec<u8>>,
+    pub upserts: HashMap<Vec<u8>, Vec<u8>>,
+    pub deletes: HashSet<Vec<u8>>,
 }
 
 impl Changeset {
@@ -63,21 +68,31 @@ impl Changeset {
 impl Storage for Changeset {
     type Key = Vec<u8>;
     type Value = Vec<u8>;
-    type Error = ();
+    type Error = ChangesetError;
 
-    fn get(
-        &mut self,
-        key: &Self::Key,
-        _: &NodeRecorder,
-    ) -> Self::StorageResult<Option<Self::Value>> {
-        unimplemented!()
+    fn get(&self, key: &Self::Key, _: &NodeRecorder) -> Self::StorageResult<Option<Self::Value>> {
+        if self.deletes.contains(key) {
+            return Err(ChangesetError::ItemDeleted);
+        }
+
+        Ok(self.upserts.get(key).cloned())
     }
 
     fn insert(&mut self, key: Self::Key, value: Option<Self::Value>) -> Self::StorageResult<()> {
-        unimplemented!()
+        self.deletes.remove(&key);
+
+        if let Some(storage_value) = value {
+            self.upserts.insert(key, storage_value);
+        } else {
+            self.upserts.insert(key, vec![]);
+        }
+
+        Ok(())
     }
 
     fn remove(&mut self, key: &Self::Key) -> Self::StorageResult<Option<Self::Value>> {
-        unimplemented!()
+        let removed = self.upserts.remove(key);
+        self.deletes.insert(key.clone());
+        Ok(removed)
     }
 }

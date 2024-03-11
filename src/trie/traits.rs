@@ -11,7 +11,7 @@ pub trait Storage {
     type StorageResult<T> = std::result::Result<T, Self::Error>;
 
     fn get(
-        &mut self,
+        &self,
         key: &Self::Key,
         recorder: &NodeRecorder,
     ) -> Self::StorageResult<Option<Self::Value>>;

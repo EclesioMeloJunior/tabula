@@ -320,7 +320,7 @@ impl<H: Hasher> Storage for Trie<H> {
     // TODO: get should have acess to the storage/recorder to retrive a storage value that is
     // hased under the trie node
     fn get(
-        &mut self,
+        &self,
         key: &Self::Key,
         recorder: &NodeRecorder,
     ) -> Self::StorageResult<Option<Self::Value>> {

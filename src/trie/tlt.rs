@@ -6,7 +6,7 @@ use super::{
     traits::Storage,
     Trie, TrieError, TrieStorageValueThreshold,
 };
-use crate::crypto::hasher::Hasher;
+use crate::crypto::hasher::{Blake256Hasher, Hasher};
 
 use super::changeset::Changeset;
 
@@ -60,6 +60,7 @@ impl NestedTransaction {
 #[derive(Debug, PartialEq)]
 pub enum CommitError {
     TransactionsVectorNotEmpty,
+    NoTransactions,
 }
 
 // TLT - Transactional Lazy Trie
@@ -95,8 +96,21 @@ where
     }
 
     fn commit(&mut self, v: TrieStorageValueThreshold) -> Result<(), CommitError> {
+        if self.nested_transactions.current.is_none() {
+            return Err(CommitError::NoTransactions);
+        }
+
         if self.nested_transactions.transactions.len() > 0 {
             return Err(CommitError::TransactionsVectorNotEmpty);
+        }
+
+        // basically we can hash the value here if the V1 and the size is > than 32
+        // and insert a VersionedStorageValue::HashedStorageValue
+        let mut trie = Trie::<Blake256Hasher>::new();
+
+        let current_transaction = self.nested_transactions.current.take();
+        if let Some(current) = current_transaction {
+            for value in current.deletes.into_iter() {}
         }
 
         Ok(())
@@ -116,32 +130,20 @@ where
     }
 
     fn get(&mut self, key: Vec<u8>) -> TLTResult<Option<Vec<u8>>> {
-        {
-            if let Some(ref mut current) = self.nested_transactions.current {
-                match current.get(&key, &self.recorder) {
-                    Err(_) => return Err(TLTError::FailToGetFromNestedTransaction),
-                    Ok(r) => match r {
-                        Some(value) => return Ok(Some(value.clone())),
-                        _ => {}
-                    },
-                }
+        if let Some(ref current) = self.nested_transactions.current {
+            match current.get(&key, &self.recorder) {
+                Err(_) => return Err(TLTError::FailToGetFromNestedTransaction),
+                Ok(Some(value)) => return Ok(Some(value.clone())),
+                _ => {}
             }
         }
 
-        {
-            let nibble_encoded_key = Key::new(&key);
-            match self.trie.get(&nibble_encoded_key, &self.recorder) {
-                Err(err) => return Err(TLTError::FailToGetFromTrie(err)),
-                Ok(r) => match r {
-                    Some(value) => return Ok(Some(value.clone())),
-                    _ => {
-                        println!("here!")
-                    }
-                },
-            }
+        let nibble_encoded_key = Key::new(&key);
+        match self.trie.get(&nibble_encoded_key, &self.recorder) {
+            Err(err) => return Err(TLTError::FailToGetFromTrie(err)),
+            Ok(Some(value)) => Ok(Some(value.clone())),
+            _ => Ok(Some(vec![])),
         }
-
-        Ok(Some(vec![]))
     }
 }
 
@@ -202,7 +204,17 @@ mod test {
         tlt.insert(hex!("010024").to_vec(), Some(vec![255, 255]))
             .unwrap();
 
+        tlt.nested_transactions.start_transaction();
+        tlt.insert(hex!("000001").to_vec(), Some(vec![0, 255, 255]))
+            .unwrap();
+        tlt.nested_transactions.commit_transaction().unwrap();
+
+        assert!(tlt.nested_transactions.transactions.len() == 0);
         assert!(tlt.nested_transactions.current.is_some());
-        assert!(trie.root.is_none());
+        assert!(tlt.trie.root.is_none());
+        assert_eq!(
+            tlt.get(hex!("000001").to_vec()),
+            Ok(Some(vec![0, 255, 255]))
+        );
     }
 }
