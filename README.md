@@ -2,8 +2,8 @@
 
 tabula aims to be a Polkadot client!
 
+- [x] Lazy Load MPTrie
 - [ ] p2p connections and blocks syncronizathion, following the tip
-- [ ] Trie and database storage
 - [ ] Wasm layer executing extrinsics
 - [ ] Consensus protocol
 - [ ] Receiving consensus messages from other peers
