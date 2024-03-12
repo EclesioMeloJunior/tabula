@@ -1856,21 +1856,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "626dec3cac7cc0e1577a2ec3fc496277ec2baa084bebad95bb6fdbfae235f84c"
 
 [[package]]
-name = "polkalite"
-version = "0.1.0"
-dependencies = [
- "blake2b_simd",
- "hex",
- "hex-literal",
- "libp2p",
- "parity-scale-codec",
- "serde",
- "serde_json",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "polling"
 version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2436,6 +2421,21 @@ checksum = "a75fb188eb626b924683e3b95e3a48e63551fcfb51949de2f06a9d91dbee93c9"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "tabula"
+version = "0.1.0"
+dependencies = [
+ "blake2b_simd",
+ "hex",
+ "hex-literal",
+ "libp2p",
+ "parity-scale-codec",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
