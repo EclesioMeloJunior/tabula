@@ -194,24 +194,6 @@ where
 
                 let encoded_child_ref = Vec::<u8>::decode(encoded).unwrap();
                 children[idx] = NodeKind::Ref(encoded_child_ref);
-
-                // let encode_child = {
-                //     let encoded_child = Vec::<u8>::decode(encoded).unwrap();
-                //     if encoded_child.len() < 32 {
-                //         encoded_child
-                //     } else {
-                //         if let Some(encoded_child) = recorder.get(&encoded_child).unwrap() {
-                //             encoded_child.clone()
-                //         } else {
-                //             return Err(DecodeError::EncodedChildNotRecorded);
-                //         }
-                //     }
-                // };
-
-                // let mut encoded_child_iter = EncodedIter::new(encode_child.into_iter());
-                // let decoded_node = decode_node(&mut encoded_child_iter, recorder).unwrap();
-                // assert_eq!(encoded_child_iter.remaining_len(), Ok(Some(0)));
-                // children[idx] = decoded_node;
             }
 
             let branch = Branch {
@@ -239,22 +221,6 @@ where
 
         assert_eq!(encoded.remaining_len(), Ok(Some(0)));
         return Ok(Some(node));
-    }
-
-    Ok(None)
-}
-
-pub fn get_while_decode_node<H>(
-    encoded: &mut EncodedIter,
-    recorder: &NodeRecorder,
-    key: &Key,
-) -> Result<Option<Element<H>>, DecodeError>
-where
-    H: Hasher,
-{
-    if let Some(header) = encoded.iter.next() {
-        let (node_kind, pk_len_mask) = decode_header(header);
-        let pk_len = decode_partial_key_length(encoded, header, pk_len_mask);
     }
 
     Ok(None)
