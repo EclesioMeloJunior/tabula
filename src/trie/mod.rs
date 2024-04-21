@@ -4,14 +4,12 @@ pub mod key;
 pub mod recorder;
 pub mod tlt;
 pub mod traits;
-use std::hash;
 use std::vec::IntoIter;
 
 use self::codec::{decode_node, EncodedIter};
 use self::recorder::{InMemoryRecorder, Recorder, RecorderError};
 use self::traits::Storage;
 use crate::crypto::hasher::Hasher;
-use hex::decode;
 use key::Key;
 use parity_scale_codec::Encode;
 
