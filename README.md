@@ -1,6 +1,6 @@
 # tabula
 
-tabula aims to be a Polkadot client!
+tabula aims to be a 4fun Polkadot client!
 
 - [x] Lazy Load MPTrie
 - [ ] p2p connections and blocks syncronizathion, following the tip
